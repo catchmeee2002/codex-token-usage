@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "codex-token-usage"
+version = "0.1.0"
+description = "Audit local Codex API token usage without counting imported Claude Code history."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+authors = [{ name = "Hongyu Liao" }]
+dependencies = []
+keywords = ["codex", "openai", "token-usage", "cli"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+]
+
+[project.optional-dependencies]
+dev = ["build>=1.2", "pytest>=8"]
+
+[project.scripts]
+codex-token-usage = "codex_token_usage.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/catchmeee2002/codex-token-usage"
+Repository = "https://github.com/catchmeee2002/codex-token-usage"
+Issues = "https://github.com/catchmeee2002/codex-token-usage/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-ra"
