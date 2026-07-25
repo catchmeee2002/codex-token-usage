@@ -44,8 +44,8 @@ cd codex-token-usage
 python3 -m pip install .
 ```
 
-The runtime uses only the Python standard library on Unix-like systems. Windows installs the
-`windows-curses` compatibility package automatically.
+The runtime uses only the Python standard library on Unix-like systems. Windows installs
+`windows-curses` and the IANA `tzdata` package automatically.
 
 ## Quick start
 

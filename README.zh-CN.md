@@ -43,7 +43,8 @@ cd codex-token-usage
 python3 -m pip install .
 ```
 
-在类 Unix 系统上，运行时只使用 Python 标准库；Windows 会自动安装 `windows-curses` 兼容包。
+在类 Unix 系统上，运行时只使用 Python 标准库；Windows 会自动安装 `windows-curses` 兼容包和
+IANA `tzdata` 时区数据。
 
 ## 快速开始
 

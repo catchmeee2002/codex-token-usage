@@ -12,7 +12,7 @@ All notable changes to this project are documented in this file. The format foll
 - Chinese and English text output, CLI help, and interactive UI
 - In-UI language switching with the `l` key
 - Bilingual project documentation and public contribution templates
-- Conditional Windows curses support and Windows CI coverage
+- Conditional Windows terminal and timezone support, plus Windows CI coverage
 
 ### Changed
 
