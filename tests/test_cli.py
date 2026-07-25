@@ -59,9 +59,10 @@ def test_default_window_and_human_output(tmp_path: Path) -> None:
     assert "不是全部历史" in output
     assert "查看全部历史：codex-token-usage --all" in output
     assert "总 Token：" in output
-    assert "每日总 Token 趋势" in output
+    assert "Token ↑  每日用量  日期 →" in output
     assert "█" in output
-    assert "2026-07-25*" in output
+    assert "7/25*" in output
+    assert "└" in output
 
 
 def test_all_time_human_output_is_clearly_labeled(tmp_path: Path) -> None:
@@ -101,7 +102,7 @@ def test_no_daily_hides_chart(tmp_path: Path) -> None:
         stdout=stdout,
     )
     assert code == 0
-    assert "每日总 Token 趋势" not in stdout.getvalue()
+    assert "Token ↑" not in stdout.getvalue()
 
 
 def test_ui_option_is_available() -> None:

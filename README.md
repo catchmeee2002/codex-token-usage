@@ -18,7 +18,7 @@ Codex usage after an imported thread is continued.
 - Full-screen terminal UI with Chinese and English interfaces
 - Press `l` in the UI to switch languages instantly
 - Last 24 hours, last 7 days, last 30 days, all history, and custom date ranges
-- Daily token-usage bar charts with partial-day markers
+- Conventional daily charts with dates on the x-axis, tokens on the y-axis, and partial-day markers
 - Human-readable Chinese or English text output
 - Stable JSON output with `schema_version: 1`
 - Root and subagent usage breakdowns

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
+from .chart import build_daily_vertical_chart
 from .model import ScanResult, Usage
 
 
@@ -45,9 +46,6 @@ WARNING_TEXT_ZH = {
     "unreadable_session_files": "部分会话文件无法读取",
 }
 
-CHART_WIDTH = 28
-
-
 def _number(value: int) -> str:
     return f"{value:,}"
 
@@ -56,43 +54,27 @@ def _local_time(value: datetime, result: ScanResult) -> str:
     return value.astimezone(result.window.timezone).isoformat(timespec="seconds")
 
 
-def _is_midnight(value: datetime) -> bool:
-    return not (value.hour or value.minute or value.second or value.microsecond)
-
-
-def _partial_days(result: ScanResult) -> set[str]:
-    partial: set[str] = set()
-    if result.window.start is not None:
-        local_start = result.window.start.astimezone(result.window.timezone)
-        if not _is_midnight(local_start):
-            partial.add(local_start.date().isoformat())
-    local_end = result.window.end.astimezone(result.window.timezone)
-    if not _is_midnight(local_end):
-        partial.add(local_end.date().isoformat())
-    return partial
-
-
-def _daily_chart(result: ScanResult, *, language: str) -> list[str]:
-    if not result.daily:
-        message = (
+def _chart_section(result: ScanResult, *, language: str) -> list[str]:
+    chart = build_daily_vertical_chart(result, width=78, height=8, language=language)
+    if chart is None:
+        return [
             "所选范围内没有带时间戳的 Token 事件。"
             if language == "zh"
             else "No timed token events matched the selected window."
-        )
-        return [message]
-
-    maximum = max(usage.total_tokens for usage in result.daily.values())
-    number_width = max(len(_number(usage.total_tokens)) for usage in result.daily.values())
-    partial_days = _partial_days(result)
-    lines: list[str] = []
-    for day, usage in sorted(result.daily.items()):
-        bar_length = max(1, round(usage.total_tokens / maximum * CHART_WIDTH))
-        label = f"{day}{'*' if day in partial_days else ' '}"
-        bar = "█" * bar_length
-        lines.append(f"{label} │ {bar:<{CHART_WIDTH}}  {_number(usage.total_tokens):>{number_width}}")
-    if partial_days.intersection(result.daily):
-        lines.append("* 表示统计范围只覆盖当天部分时段" if language == "zh" else "* partial day")
-    return lines
+        ]
+    if language == "zh":
+        title = "Token ↑  每日用量  日期 →"
+        if chart.bucket_days > 1:
+            title += f"  {chart.bucket_days}天/柱"
+        if chart.partial:
+            title += "  * 部分日"
+    else:
+        title = "Tokens ↑  Daily usage  Date →"
+        if chart.bucket_days > 1:
+            title += f"  {chart.bucket_days}d/bar"
+        if chart.partial:
+            title += "  * partial"
+    return [title, *chart.lines]
 
 
 def _duration_zh(label: str) -> str:
@@ -175,7 +157,7 @@ def _render_zh(result: ScanResult, *, include_daily: bool) -> str:
     ]
 
     if include_daily:
-        lines.extend(["", "每日总 Token 趋势", *_daily_chart(result, language="zh")])
+        lines.extend(["", *_chart_section(result, language="zh")])
 
     lines.extend(["", "按线程类型"])
     thread_labels = {"root": "主线程", "subagent": "子代理", "unknown": "未知"}
@@ -247,7 +229,7 @@ def _render_en(result: ScanResult, *, include_daily: bool) -> str:
     ]
 
     if include_daily:
-        lines.extend(["", "Daily total-token trend", *_daily_chart(result, language="en")])
+        lines.extend(["", *_chart_section(result, language="en")])
 
     lines.extend(["", "By thread type"])
     for key in ("root", "subagent", "unknown"):

@@ -1,12 +1,17 @@
 from __future__ import annotations
 
 import curses
-import unicodedata
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TextIO
 
+from .chart import (
+    build_daily_vertical_chart,
+    clip_display as _clip,
+    compact_number as _compact_number,
+    display_width as _display_width,
+)
 from .model import ScanResult, ScanWindow, Usage
 from .scanner import scan_codex_usage
 from .timeparse import TimeParseError, build_window
@@ -70,8 +75,9 @@ TEXT = {
         "input_output": "输入 / 输出",
         "cached_input": "缓存输入",
         "root_subagent": "主线程 / 子代理",
-        "chart": "每日总 Token 趋势",
-        "partial": "（* 部分时段）",
+        "chart": "Token ↑  每日用量  日期 →",
+        "partial": "  * 部分日",
+        "bucket": "  {days}天/柱",
         "no_chart": "所选范围内没有可绘制的每日数据。",
         "warning": "警告：发现 {count} 个数据完整性问题",
         "all_scope": "全部历史",
@@ -100,8 +106,9 @@ TEXT = {
         "input_output": "Input / output",
         "cached_input": "Cached input",
         "root_subagent": "Root / subagent",
-        "chart": "Daily total-token trend",
-        "partial": " (* partial day)",
+        "chart": "Tokens ↑  Daily usage  Date →",
+        "partial": "  * partial",
+        "bucket": "  {days}d/bar",
         "no_chart": "No daily data is available for this range.",
         "warning": "Warning: {count} data-integrity issues detected",
         "all_scope": "All history",
@@ -126,42 +133,8 @@ def choice_labels(language: str) -> list[str]:
     return [_choice_copy(choice, language)[0] for choice in RANGE_CHOICES]
 
 
-def _display_width(text: str) -> int:
-    return sum(2 if unicodedata.east_asian_width(char) in {"W", "F"} else 1 for char in text)
-
-
-def _clip(text: str, width: int) -> str:
-    if width <= 0:
-        return ""
-    result: list[str] = []
-    used = 0
-    for char in text:
-        char_width = 2 if unicodedata.east_asian_width(char) in {"W", "F"} else 1
-        if used + char_width > width:
-            break
-        result.append(char)
-        used += char_width
-    return "".join(result)
-
-
 def _number(value: int) -> str:
     return f"{value:,}"
-
-
-def _compact_number(value: int, language: str) -> str:
-    if language == "en":
-        if value >= 1_000_000_000:
-            return f"{value / 1_000_000_000:.2f}B"
-        if value >= 1_000_000:
-            return f"{value / 1_000_000:.2f}M"
-        if value >= 1_000:
-            return f"{value / 1_000:.2f}K"
-        return _number(value)
-    if value >= 100_000_000:
-        return f"{value / 100_000_000:.2f} 亿"
-    if value >= 10_000:
-        return f"{value / 10_000:.2f} 万"
-    return _number(value)
 
 
 def _scope_name(window: ScanWindow, language: str) -> str:
@@ -188,44 +161,6 @@ def _range_text(result: ScanResult, language: str) -> str:
         return copy["all_range"].format(first=first_day, end=end)
     start = result.window.start.astimezone(result.window.timezone).strftime("%Y-%m-%d %H:%M")
     return f"{start}  →  {end}"
-
-
-def _partial_days(result: ScanResult) -> set[str]:
-    partial: set[str] = set()
-    if result.window.start is not None:
-        start = result.window.start.astimezone(result.window.timezone)
-        if start.hour or start.minute or start.second or start.microsecond:
-            partial.add(start.date().isoformat())
-    end = result.window.end.astimezone(result.window.timezone)
-    if end.hour or end.minute or end.second or end.microsecond:
-        partial.add(end.date().isoformat())
-    return partial
-
-
-def build_chart_rows(
-    result: ScanResult,
-    *,
-    width: int,
-    limit: int,
-    language: str = "zh",
-) -> list[str]:
-    language = _language(language)
-    if not result.daily or width < 24 or limit <= 0:
-        return []
-    items = sorted(result.daily.items())[-limit:]
-    maximum = max(usage.total_tokens for _, usage in items)
-    values = [_compact_number(usage.total_tokens, language) for _, usage in items]
-    value_width = max(_display_width(value) for value in values)
-    bar_width = max(4, width - 10 - value_width)
-    partial_days = _partial_days(result)
-    rows: list[str] = []
-    for (day, usage), value in zip(items, values):
-        length = max(1, round(usage.total_tokens / maximum * bar_width))
-        bar = "█" * length
-        marker = "*" if day in partial_days else " "
-        value_padding = " " * (value_width - _display_width(value))
-        rows.append(f"{day[5:]}{marker} │ {bar:<{bar_width}} {value_padding}{value}")
-    return rows
 
 
 class TokenUsageTui:
@@ -457,21 +392,23 @@ class TokenUsageTui:
             width=width - label_width,
         )
 
-        chart_title = self._t("chart")
-        if _partial_days(result).intersection(result.daily):
-            chart_title += self._t("partial")
-        self._write(11, x, chart_title, width=width, attr=curses.A_BOLD)
         available_rows = max(0, height - (16 if result.warnings else 14))
-        rows = build_chart_rows(
+        chart = build_daily_vertical_chart(
             result,
             width=width,
-            limit=available_rows,
+            height=max(3, available_rows - 2),
             language=self.language,
         )
-        if not rows:
+        chart_title = self._t("chart")
+        if chart is not None and chart.bucket_days > 1:
+            chart_title += self._t("bucket", days=chart.bucket_days)
+        if chart is not None and chart.partial:
+            chart_title += self._t("partial")
+        self._write(11, x, chart_title, width=width, attr=curses.A_BOLD)
+        if chart is None:
             self._write(12, x, self._t("no_chart"), width=width, attr=curses.A_DIM)
         else:
-            for offset, row in enumerate(rows):
+            for offset, row in enumerate(chart.lines):
                 self._write(12 + offset, x, row, width=width)
 
         if result.warnings:

@@ -1,9 +1,11 @@
 from datetime import datetime, timezone
 from pathlib import Path
 
+from codex_token_usage.chart import build_daily_vertical_chart
+from codex_token_usage.model import ScanResult, ScanWindow, Usage
 from codex_token_usage.scanner import scan_codex_usage
 from codex_token_usage.timeparse import build_window
-from codex_token_usage.tui import build_chart_rows, choice_labels
+from codex_token_usage.tui import choice_labels
 
 from test_scanner import make_home, session_meta, token_event, usage, write_session
 
@@ -28,14 +30,14 @@ def test_tui_offers_all_history_and_custom_ranges() -> None:
     ]
 
 
-def test_chart_rows_scale_daily_totals(tmp_path: Path) -> None:
+def test_vertical_chart_uses_date_x_axis_and_token_y_axis(tmp_path: Path) -> None:
     home = make_home(tmp_path)
     write_session(
         home,
         "root",
         [
-            session_meta("root", "2026-07-24T01:00:00Z"),
-            token_event("2026-07-24T01:01:00Z", usage(90, 10), usage(90, 10)),
+            session_meta("root", "2026-07-23T01:00:00Z"),
+            token_event("2026-07-23T01:01:00Z", usage(90, 10), usage(90, 10)),
             token_event("2026-07-25T01:01:00Z", usage(290, 30), usage(200, 20)),
         ],
     )
@@ -48,12 +50,39 @@ def test_chart_rows_scale_daily_totals(tmp_path: Path) -> None:
         to_value=None,
     )
     result = scan_codex_usage(home, window, now=NOW)
-    rows = build_chart_rows(result, width=50, limit=10)
-    assert len(rows) == 2
-    assert rows[0].startswith("07-24 ")
-    assert rows[1].startswith("07-25*")
-    assert rows[1].count("█") > rows[0].count("█")
+    chart = build_daily_vertical_chart(result, width=50, height=6)
+    assert chart is not None
+    assert [bucket.total_tokens for bucket in chart.buckets] == [100, 0, 220]
+    assert len(chart.lines) == 8
+    assert "220" in chart.lines[0]
+    assert any("└" in line for line in chart.lines)
+    assert "7/23" in chart.lines[-1]
+    assert "7/25*" in chart.lines[-1]
+    assert any("█" in line for line in chart.lines)
 
-    english_rows = build_chart_rows(result, width=50, limit=10, language="en")
-    assert english_rows[0].endswith("100")
-    assert english_rows[1].endswith("220")
+    english = build_daily_vertical_chart(result, width=50, height=6, language="en")
+    assert english is not None
+    assert english.lines[0].lstrip().startswith("220")
+
+
+def test_vertical_chart_buckets_long_ranges_without_losing_totals() -> None:
+    result = ScanResult(
+        generated_at=NOW,
+        window=ScanWindow(
+            start=datetime(2020, 1, 1, tzinfo=timezone.utc),
+            end=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            timezone=timezone.utc,
+            timezone_name="UTC",
+            label="custom range",
+        ),
+        auth_mode="apikey",
+    )
+    result.daily = {
+        "2020-01-01": Usage(input_tokens=10),
+        "2025-12-31": Usage(input_tokens=20),
+    }
+    chart = build_daily_vertical_chart(result, width=50, height=6)
+    assert chart is not None
+    assert chart.bucket_days > 1
+    assert len(chart.buckets) <= 40
+    assert sum(bucket.total_tokens for bucket in chart.buckets) == 30

@@ -4,6 +4,15 @@ All notable changes to this project are documented in this file. The format foll
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.3.0] - 2026-07-26
+
+### Changed
+
+- Replaced horizontal daily bars with a conventional vertical chart using dates on the x-axis and
+  token volume on the y-axis
+- Filled missing calendar dates with zero values so spacing remains chronological
+- Added automatic multi-day buckets when a selected range is wider than the terminal
+
 ## [0.2.0] - 2026-07-26
 
 ### Added
