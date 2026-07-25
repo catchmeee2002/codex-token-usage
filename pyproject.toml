@@ -4,21 +4,27 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "codex-token-usage"
-version = "0.1.0"
-description = "Audit local Codex API token usage without counting imported Claude Code history."
+version = "0.2.0"
+description = "Audit and visualize local Codex token usage without counting imported Claude Code history."
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
 authors = [{ name = "Hongyu Liao" }]
-dependencies = []
-keywords = ["codex", "openai", "token-usage", "cli"]
+dependencies = [
+  "windows-curses>=2.4; platform_system == 'Windows'",
+]
+keywords = ["codex", "openai", "token-usage", "cli", "tui", "monitoring"]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Environment :: Console",
+  "Environment :: Console :: Curses",
+  "Operating System :: OS Independent",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
+  "Topic :: System :: Monitoring",
+  "Topic :: Utilities",
 ]
 
 [project.optional-dependencies]
@@ -30,7 +36,9 @@ codex-token-usage = "codex_token_usage.cli:main"
 [project.urls]
 Homepage = "https://github.com/catchmeee2002/codex-token-usage"
 Repository = "https://github.com/catchmeee2002/codex-token-usage"
+Documentation = "https://github.com/catchmeee2002/codex-token-usage#readme"
 Issues = "https://github.com/catchmeee2002/codex-token-usage/issues"
+Changelog = "https://github.com/catchmeee2002/codex-token-usage/blob/main/CHANGELOG.md"
 
 [tool.setuptools.packages.find]
 where = ["src"]

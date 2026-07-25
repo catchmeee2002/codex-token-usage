@@ -5,7 +5,7 @@ from datetime import datetime
 from .model import ScanResult, Usage
 
 
-WARNING_TEXT = {
+WARNING_TEXT_EN = {
     "ambiguous_import_events": "imported events had no usable timestamp and were excluded",
     "auth_status_unknown": "current Codex authentication mode could not be determined",
     "current_auth_is_not_api_key": "current Codex authentication mode is not API key",
@@ -25,6 +25,28 @@ WARNING_TEXT = {
     "unreadable_session_files": "session files could not be read",
 }
 
+WARNING_TEXT_ZH = {
+    "ambiguous_import_events": "导入事件缺少可用时间戳，已排除",
+    "auth_status_unknown": "无法确定当前 Codex 认证方式",
+    "current_auth_is_not_api_key": "当前 Codex 认证方式不是 API Key",
+    "files_changed_during_scan": "扫描期间会话文件发生变化，本次只读取稳定前缀",
+    "import_evidence_mismatches": "导入账本与会话导入标记不一致",
+    "invalid_import_ledger": "无法解析导入会话账本",
+    "invalid_import_ledger_records": "导入会话账本中的无效记录已跳过",
+    "invalid_session_start_timestamps": "部分会话开始时间无法解析",
+    "invalid_token_event_timestamps": "部分 Token 事件时间戳无效",
+    "invalid_token_usage_events": "部分 Token 计数无效，已跳过",
+    "malformed_json_lines": "格式错误的非末尾 JSONL 记录已跳过",
+    "session_files_without_metadata": "缺少会话元数据的文件已跳过",
+    "session_files_without_thread_id": "缺少线程 ID 的会话文件已跳过",
+    "sessions_directory_missing": "Codex 会话目录不存在",
+    "token_counter_resets": "累计 Token 计数发生回退，已按新分段统计",
+    "truncated_tail_lines": "未写完的末尾 JSONL 记录已忽略",
+    "unreadable_session_files": "部分会话文件无法读取",
+}
+
+CHART_WIDTH = 28
+
 
 def _number(value: int) -> str:
     return f"{value:,}"
@@ -34,70 +56,200 @@ def _local_time(value: datetime, result: ScanResult) -> str:
     return value.astimezone(result.window.timezone).isoformat(timespec="seconds")
 
 
-def _usage_lines(usage: Usage, indent: str = "") -> list[str]:
+def _is_midnight(value: datetime) -> bool:
+    return not (value.hour or value.minute or value.second or value.microsecond)
+
+
+def _partial_days(result: ScanResult) -> set[str]:
+    partial: set[str] = set()
+    if result.window.start is not None:
+        local_start = result.window.start.astimezone(result.window.timezone)
+        if not _is_midnight(local_start):
+            partial.add(local_start.date().isoformat())
+    local_end = result.window.end.astimezone(result.window.timezone)
+    if not _is_midnight(local_end):
+        partial.add(local_end.date().isoformat())
+    return partial
+
+
+def _daily_chart(result: ScanResult, *, language: str) -> list[str]:
+    if not result.daily:
+        message = (
+            "所选范围内没有带时间戳的 Token 事件。"
+            if language == "zh"
+            else "No timed token events matched the selected window."
+        )
+        return [message]
+
+    maximum = max(usage.total_tokens for usage in result.daily.values())
+    number_width = max(len(_number(usage.total_tokens)) for usage in result.daily.values())
+    partial_days = _partial_days(result)
+    lines: list[str] = []
+    for day, usage in sorted(result.daily.items()):
+        bar_length = max(1, round(usage.total_tokens / maximum * CHART_WIDTH))
+        label = f"{day}{'*' if day in partial_days else ' '}"
+        bar = "█" * bar_length
+        lines.append(f"{label} │ {bar:<{CHART_WIDTH}}  {_number(usage.total_tokens):>{number_width}}")
+    if partial_days.intersection(result.daily):
+        lines.append("* 表示统计范围只覆盖当天部分时段" if language == "zh" else "* partial day")
+    return lines
+
+
+def _duration_zh(label: str) -> str:
+    value = label.removeprefix("rolling ")
+    units = {"m": "分钟", "h": "小时", "d": "天", "w": "周"}
+    if len(value) > 1 and value[-1] in units:
+        return f"{value[:-1]} {units[value[-1]]}"
+    return value
+
+
+def _usage_lines_zh(usage: Usage) -> list[str]:
     lines = [
-        f"{indent}Total tokens:           {_number(usage.total_tokens)}",
-        f"{indent}Input tokens:           {_number(usage.input_tokens)}",
-        f"{indent}  Cached input:         {_number(usage.cached_input_tokens)}",
-        f"{indent}  Uncached input:       {_number(usage.uncached_input_tokens)}",
+        f"总 Token：       {_number(usage.total_tokens)}",
+        f"输入 Token：     {_number(usage.input_tokens)}",
+        f"  缓存输入：     {_number(usage.cached_input_tokens)}",
+        f"  非缓存输入：   {_number(usage.uncached_input_tokens)}",
     ]
     if usage.cache_write_input_tokens:
-        lines.append(f"{indent}  Cache-write input:    {_number(usage.cache_write_input_tokens)}")
+        lines.append(f"  缓存写入输入： {_number(usage.cache_write_input_tokens)}")
     lines.extend(
         [
-            f"{indent}Output tokens:          {_number(usage.output_tokens)}",
-            f"{indent}  Reasoning output:     {_number(usage.reasoning_output_tokens)}",
+            f"输出 Token：     {_number(usage.output_tokens)}",
+            f"  推理输出：     {_number(usage.reasoning_output_tokens)}",
         ]
     )
     return lines
 
 
-def _daily_table(result: ScanResult) -> list[str]:
-    if not result.daily:
-        return ["No timed token events matched the selected window."]
-    headers = ("Date", "Total", "Input", "Cached", "Output", "Reasoning")
-    rows = [
-        (
-            day,
-            _number(usage.total_tokens),
-            _number(usage.input_tokens),
-            _number(usage.cached_input_tokens),
-            _number(usage.output_tokens),
-            _number(usage.reasoning_output_tokens),
-        )
-        for day, usage in sorted(result.daily.items())
+def _usage_lines_en(usage: Usage) -> list[str]:
+    lines = [
+        f"Total tokens:           {_number(usage.total_tokens)}",
+        f"Input tokens:           {_number(usage.input_tokens)}",
+        f"  Cached input:         {_number(usage.cached_input_tokens)}",
+        f"  Uncached input:       {_number(usage.uncached_input_tokens)}",
     ]
-    widths = [max(len(headers[index]), *(len(row[index]) for row in rows)) for index in range(6)]
+    if usage.cache_write_input_tokens:
+        lines.append(f"  Cache-write input:    {_number(usage.cache_write_input_tokens)}")
+    lines.extend(
+        [
+            f"Output tokens:          {_number(usage.output_tokens)}",
+            f"  Reasoning output:     {_number(usage.reasoning_output_tokens)}",
+        ]
+    )
+    return lines
 
-    def format_row(row: tuple[str, ...]) -> str:
-        return "  ".join(
-            value.ljust(widths[index]) if index == 0 else value.rjust(widths[index])
-            for index, value in enumerate(row)
-        )
 
-    return [format_row(headers), format_row(tuple("-" * width for width in widths)), *map(format_row, rows)]
-
-
-def render_human(result: ScanResult, *, include_daily: bool) -> str:
+def _render_zh(result: ScanResult, *, include_daily: bool) -> str:
     if result.window.start is None:
-        window_text = f"all recorded time through {_local_time(result.window.end, result)}"
+        window_lines = [
+            "统计范围：全部历史",
+            f"统计截止：{_local_time(result.window.end, result)}",
+        ]
+    elif result.window.label.startswith("rolling "):
+        default_text = "默认" if result.window.label == "rolling 7d" else ""
+        window_lines = [
+            f"统计范围：⚠ 最近 {_duration_zh(result.window.label)}（{default_text}滚动窗口，不是全部历史）",
+            (
+                f"时间区间：{_local_time(result.window.start, result)} 至 "
+                f"{_local_time(result.window.end, result)}（结束时间不含）"
+            ),
+            "查看全部历史：codex-token-usage --all",
+        ]
     else:
-        window_text = (
-            f"{_local_time(result.window.start, result)} through "
-            f"{_local_time(result.window.end, result)} (end exclusive)"
-        )
-    auth_mode = result.auth_mode or "unknown"
+        window_lines = [
+            "统计范围：自定义区间",
+            (
+                f"时间区间：{_local_time(result.window.start, result)} 至 "
+                f"{_local_time(result.window.end, result)}（结束时间不含）"
+            ),
+        ]
 
+    auth_mode = result.auth_mode or "未知"
+    lines = [
+        "Codex Token 使用统计",
+        *window_lines,
+        f"当前认证方式：{auth_mode}",
+        "历史会话日志无法识别每次调用所使用的 API Key。",
+        "",
+        *_usage_lines_zh(result.usage),
+    ]
+
+    if include_daily:
+        lines.extend(["", "每日总 Token 趋势", *_daily_chart(result, language="zh")])
+
+    lines.extend(["", "按线程类型"])
+    thread_labels = {"root": "主线程", "subagent": "子代理", "unknown": "未知"}
+    for key in ("root", "subagent", "unknown"):
+        usage = result.by_thread_type.get(key, Usage())
+        if usage.total_tokens or key != "unknown":
+            lines.append(f"  {thread_labels[key]}：{_number(usage.total_tokens)} Token")
+
+    diagnostics = result.diagnostics
+    lines.extend(
+        [
+            "",
+            "导入历史处理",
+            f"  导入账本记录：       {_number(diagnostics.get('import_ledger_records', 0))}",
+            f"  发现的导入线程：     {_number(diagnostics.get('imported_threads_seen', 0))}",
+            f"  排除的导入历史事件： {_number(diagnostics.get('import_history_events_excluded', 0))}",
+            f"  排除的合成导入事件： {_number(diagnostics.get('import_synthetic_events_excluded', 0))}",
+            f"  后续继续使用的线程： {_number(diagnostics.get('continued_import_threads', 0))}",
+            "",
+            "数据完整性",
+            f"  扫描会话文件：       {_number(diagnostics.get('session_files_scanned', 0))}",
+            f"  计入 Token 事件：    {_number(diagnostics.get('token_events_counted', 0))}",
+            f"  忽略重复快照：       {_number(diagnostics.get('duplicate_token_snapshots_ignored', 0))}",
+            f"  忽略完全重复事件：   {_number(diagnostics.get('exact_duplicate_events_ignored', 0))}",
+        ]
+    )
+
+    if result.warnings:
+        lines.extend(["", "警告"])
+        for code, count in sorted(result.warnings.items()):
+            message = WARNING_TEXT_ZH.get(code, code.replace("_", " "))
+            lines.append(f"  {code}（{count}）：{message}")
+    return "\n".join(lines) + "\n"
+
+
+def _render_en(result: ScanResult, *, include_daily: bool) -> str:
+    if result.window.start is None:
+        window_lines = [
+            "Scope: all history",
+            f"Through: {_local_time(result.window.end, result)}",
+        ]
+    elif result.window.label.startswith("rolling "):
+        default_text = "default " if result.window.label == "rolling 7d" else ""
+        window_lines = [
+            f"Scope: WARNING: {result.window.label} ({default_text}rolling window, not all history)",
+            (
+                f"Range: {_local_time(result.window.start, result)} through "
+                f"{_local_time(result.window.end, result)} (end exclusive)"
+            ),
+            "View all history: codex-token-usage --all",
+        ]
+    else:
+        window_lines = [
+            "Scope: custom range",
+            (
+                f"Range: {_local_time(result.window.start, result)} through "
+                f"{_local_time(result.window.end, result)} (end exclusive)"
+            ),
+        ]
+
+    auth_mode = result.auth_mode or "unknown"
     lines = [
         "Codex token usage",
-        f"Window: {result.window.label}; {window_text}",
+        *window_lines,
         f"Current auth mode: {auth_mode}",
         "Historical session logs do not identify the API key that was used.",
         "",
-        *_usage_lines(result.usage),
-        "",
-        "By thread type",
+        *_usage_lines_en(result.usage),
     ]
+
+    if include_daily:
+        lines.extend(["", "Daily total-token trend", *_daily_chart(result, language="en")])
+
+    lines.extend(["", "By thread type"])
     for key in ("root", "subagent", "unknown"):
         usage = result.by_thread_type.get(key, Usage())
         if usage.total_tokens or key != "unknown":
@@ -122,11 +274,15 @@ def render_human(result: ScanResult, *, include_daily: bool) -> str:
         ]
     )
 
-    if include_daily:
-        lines.extend(["", "Daily", *_daily_table(result)])
     if result.warnings:
         lines.extend(["", "Warnings"])
         for code, count in sorted(result.warnings.items()):
-            message = WARNING_TEXT.get(code, code.replace("_", " "))
+            message = WARNING_TEXT_EN.get(code, code.replace("_", " "))
             lines.append(f"  {code} ({count}): {message}")
     return "\n".join(lines) + "\n"
+
+
+def render_human(result: ScanResult, *, include_daily: bool, language: str = "zh") -> str:
+    if language == "en":
+        return _render_en(result, include_daily=include_daily)
+    return _render_zh(result, include_daily=include_daily)
