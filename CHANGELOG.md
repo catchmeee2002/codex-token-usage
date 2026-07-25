@@ -4,6 +4,13 @@ All notable changes to this project are documented in this file. The format foll
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.5.0] - 2026-07-26
+
+### Added
+
+- An Effort analysis page in the terminal UI with per-level token share, worker-hour burn rate,
+  median call and turn usage, reasoning density, cache ratio, and sample size
+
 ## [0.4.1] - 2026-07-26
 
 ### Fixed

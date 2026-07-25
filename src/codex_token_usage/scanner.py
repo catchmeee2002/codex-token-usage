@@ -26,6 +26,17 @@ class TokenEvent:
     model_context_window: Any
     rate_limits: Any
     before_subagent_trigger: bool
+    effort: str | None
+    model: str | None
+    turn_id: str | None
+
+
+@dataclass
+class TurnEvidence:
+    start: Any = None
+    end: Any = None
+    effort: str | None = None
+    model: str | None = None
 
 
 @dataclass
@@ -34,6 +45,10 @@ class FileEvidence:
     later_meta_count: int = 0
     import_marker_seen: bool = False
     subagent_trigger_seen: bool = False
+    current_turn_id: str | None = None
+    current_effort: str | None = None
+    current_model: str | None = None
+    turns: dict[str, TurnEvidence] = field(default_factory=dict)
     token_events: list[TokenEvent] = field(default_factory=list)
 
 
@@ -86,7 +101,51 @@ def _consume_object(obj: Any, evidence: FileEvidence) -> None:
         if payload.get("trigger_turn") is True:
             evidence.subagent_trigger_seen = True
         return
+    if obj.get("type") == "turn_context":
+        turn_id = payload.get("turn_id")
+        if isinstance(turn_id, str) and turn_id:
+            evidence.current_turn_id = turn_id
+        effort = payload.get("effort")
+        mode = payload.get("collaboration_mode")
+        settings = mode.get("settings") if isinstance(mode, dict) else None
+        if not isinstance(settings, dict):
+            settings = {}
+        configured_effort = settings.get("reasoning_effort")
+        configured_model = settings.get("model")
+        evidence.current_effort = (
+            effort
+            if isinstance(effort, str) and effort
+            else configured_effort if isinstance(configured_effort, str) else None
+        )
+        model = payload.get("model")
+        evidence.current_model = (
+            model
+            if isinstance(model, str) and model
+            else configured_model if isinstance(configured_model, str) else None
+        )
+        if evidence.current_turn_id:
+            turn = evidence.turns.setdefault(evidence.current_turn_id, TurnEvidence())
+            turn.effort = evidence.current_effort
+            turn.model = evidence.current_model
+        return
     if obj.get("type") != "event_msg":
+        return
+    if payload.get("type") == "task_started":
+        turn_id = payload.get("turn_id")
+        evidence.current_turn_id = turn_id if isinstance(turn_id, str) and turn_id else None
+        if evidence.current_turn_id:
+            turn = evidence.turns.setdefault(evidence.current_turn_id, TurnEvidence())
+            turn.start = obj.get("timestamp")
+            turn.effort = evidence.current_effort
+            turn.model = evidence.current_model
+        return
+    if payload.get("type") == "task_complete":
+        turn_id = payload.get("turn_id")
+        if not isinstance(turn_id, str) or not turn_id:
+            turn_id = evidence.current_turn_id
+        if turn_id:
+            turn = evidence.turns.setdefault(turn_id, TurnEvidence())
+            turn.end = obj.get("timestamp")
         return
     if payload.get("type") == "agent_message":
         if payload.get("message") == IMPORT_MARKER:
@@ -109,6 +168,9 @@ def _consume_object(obj: Any, evidence: FileEvidence) -> None:
             model_context_window=info.get("model_context_window"),
             rate_limits=payload.get("rate_limits"),
             before_subagent_trigger=not evidence.subagent_trigger_seen,
+            effort=evidence.current_effort,
+            model=evidence.current_model,
+            turn_id=evidence.current_turn_id,
         )
     )
 
@@ -325,12 +387,34 @@ def scan_codex_usage(codex_home: Path, window: ScanWindow, *, now: datetime) -> 
                 day = timestamp.astimezone(window.timezone).date().isoformat()
 
             result.add_usage(usage, thread_type, day)
+            turn_key = f"{thread_id}:{event.turn_id}" if event.turn_id else None
+            result.add_effort_usage(
+                usage,
+                effort=event.effort,
+                model=event.model,
+                turn_key=turn_key,
+            )
             result.bump_diagnostic("token_events_counted")
             actual_threads.add(thread_id)
             thread_has_counted_usage = True
 
         if is_imported and thread_has_counted_usage:
             continued_import_threads.add(thread_id)
+
+        for turn_id, turn in evidence.turns.items():
+            start = _parse_timestamp(turn.start)
+            end = _parse_timestamp(turn.end)
+            if start is None or end is None or end <= start:
+                continue
+            clipped_start = max(start, window.start) if window.start is not None else start
+            clipped_end = min(end, window.end)
+            if clipped_end <= clipped_start:
+                continue
+            result.add_effort_turn_duration(
+                effort=turn.effort,
+                turn_key=f"{thread_id}:{turn_id}",
+                seconds=(clipped_end - clipped_start).total_seconds(),
+            )
 
     result.bump_diagnostic("actual_threads", len(actual_threads))
     result.bump_diagnostic("imported_threads_seen", len(imported_threads_seen))

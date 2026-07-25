@@ -17,6 +17,7 @@ Codex usage after an imported thread is continued.
 
 - Full-screen terminal UI with Chinese and English interfaces
 - Press `l` in the UI to switch languages instantly
+- Press `Tab` in the UI to switch between daily usage and effort analysis
 - Last 24 hours, last 7 days, last 30 days, all history, and custom date ranges
 - Conventional daily charts with dates on the x-axis, tokens on the y-axis, and partial-day markers
 - Keyboard-selectable chart bars with exact date or date-range totals
@@ -65,6 +66,7 @@ Controls:
 | `Enter` | Apply the selected range |
 | `r` | Refresh the current report |
 | `l` | Switch between Chinese and English |
+| `Tab` or `e` | Switch between usage and effort-analysis pages |
 | `q` or `Esc` | Exit |
 
 Start the UI in English explicitly:

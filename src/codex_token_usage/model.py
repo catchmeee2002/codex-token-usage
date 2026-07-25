@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, tzinfo
+from statistics import median
 from typing import Any, Mapping
 
 
@@ -70,6 +71,76 @@ class Usage:
         }
 
 
+@dataclass
+class EffortUsage:
+    effort: str
+    usage: Usage = field(default_factory=Usage)
+    models: set[str] = field(default_factory=set)
+    token_events: int = 0
+    event_tokens: list[int] = field(default_factory=list)
+    turn_tokens: dict[str, int] = field(default_factory=dict)
+    turn_seconds: dict[str, float] = field(default_factory=dict)
+
+    def add_event(self, usage: Usage, *, model: str | None, turn_key: str | None) -> None:
+        self.usage.add(usage)
+        if model:
+            self.models.add(model)
+        self.token_events += 1
+        self.event_tokens.append(usage.total_tokens)
+        if turn_key:
+            self.turn_tokens[turn_key] = self.turn_tokens.get(turn_key, 0) + usage.total_tokens
+
+    def add_turn_duration(self, turn_key: str, seconds: float) -> None:
+        if seconds > 0:
+            self.turn_seconds[turn_key] = seconds
+
+    @property
+    def turns(self) -> int:
+        return len(self.turn_tokens)
+
+    @property
+    def model_label(self) -> str:
+        if not self.models:
+            return "unknown"
+        if len(self.models) == 1:
+            return next(iter(self.models))
+        return "mixed"
+
+    @property
+    def median_event_tokens(self) -> int:
+        return round(median(self.event_tokens)) if self.event_tokens else 0
+
+    @property
+    def median_turn_tokens(self) -> int:
+        values = list(self.turn_tokens.values())
+        return round(median(values)) if values else 0
+
+    @property
+    def worker_hours(self) -> float:
+        return sum(self.turn_seconds.values()) / 3600
+
+    @property
+    def completed_turn_tokens(self) -> int:
+        return sum(self.turn_tokens.get(key, 0) for key in self.turn_seconds)
+
+    @property
+    def tokens_per_worker_hour(self) -> float:
+        hours = self.worker_hours
+        return self.completed_turn_tokens / hours if hours else 0.0
+
+    @property
+    def cache_ratio(self) -> float:
+        if not self.usage.input_tokens:
+            return 0.0
+        return self.usage.cached_input_tokens / self.usage.input_tokens
+
+    @property
+    def reasoning_ratio(self) -> float:
+        if not self.usage.output_tokens:
+            return 0.0
+        return self.usage.reasoning_output_tokens / self.usage.output_tokens
+
+
 def cumulative_signature(mapping: Mapping[str, Any]) -> tuple[int, ...]:
     return tuple(_integer(mapping, name) for name in CUMULATIVE_FIELDS)
 
@@ -104,6 +175,7 @@ class ScanResult:
         default_factory=lambda: {"root": Usage(), "subagent": Usage(), "unknown": Usage()}
     )
     daily: dict[str, Usage] = field(default_factory=dict)
+    by_effort: dict[str, EffortUsage] = field(default_factory=dict)
     diagnostics: dict[str, int] = field(default_factory=dict)
     warnings: dict[str, int] = field(default_factory=dict)
 
@@ -118,6 +190,33 @@ class ScanResult:
         self.by_thread_type.setdefault(thread_type, Usage()).add(usage)
         if day is not None:
             self.daily.setdefault(day, Usage()).add(usage)
+
+    def add_effort_usage(
+        self,
+        usage: Usage,
+        *,
+        effort: str | None,
+        model: str | None,
+        turn_key: str | None,
+    ) -> None:
+        key = effort or "unknown"
+        self.by_effort.setdefault(key, EffortUsage(effort=key)).add_event(
+            usage,
+            model=model,
+            turn_key=turn_key,
+        )
+
+    def add_effort_turn_duration(
+        self,
+        *,
+        effort: str | None,
+        turn_key: str,
+        seconds: float,
+    ) -> None:
+        key = effort or "unknown"
+        bucket = self.by_effort.get(key)
+        if bucket is not None:
+            bucket.add_turn_duration(turn_key, seconds)
 
     def as_dict(self) -> dict[str, Any]:
         return {

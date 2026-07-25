@@ -5,7 +5,7 @@ from codex_token_usage.chart import build_daily_vertical_chart
 from codex_token_usage.model import ScanResult, ScanWindow, Usage
 from codex_token_usage.scanner import scan_codex_usage
 from codex_token_usage.timeparse import build_window
-from codex_token_usage.tui import TokenUsageTui, choice_labels
+from codex_token_usage.tui import TokenUsageTui, choice_labels, effort_column_labels, effort_keys
 
 from test_scanner import make_home, session_meta, token_event, usage, write_session
 
@@ -101,3 +101,39 @@ def test_tui_chart_selection_stops_at_edges() -> None:
     assert tui.chart_index == 2
     tui._move_chart_selection(-1)
     assert tui.chart_index == 1
+
+
+def test_tui_toggles_between_usage_and_effort_pages() -> None:
+    tui = object.__new__(TokenUsageTui)
+    tui.page = "usage"
+    tui._toggle_page()
+    assert tui.page == "effort"
+    tui._toggle_page()
+    assert tui.page == "usage"
+
+
+def test_effort_keys_follow_reasoning_level_order() -> None:
+    result = ScanResult(
+        generated_at=NOW,
+        window=ScanWindow(None, NOW, timezone.utc, "UTC", "all time"),
+        auth_mode="apikey",
+    )
+    result.add_effort_usage(Usage(input_tokens=10), effort="ultra", model="gpt-test", turn_key="u")
+    result.add_effort_usage(Usage(input_tokens=10), effort="medium", model="gpt-test", turn_key="m")
+    result.add_effort_usage(Usage(input_tokens=10), effort="xhigh", model="gpt-test", turn_key="x")
+    assert effort_keys(result) == ["medium", "xhigh", "ultra"]
+
+
+def test_effort_table_headers_are_localized() -> None:
+    assert effort_column_labels("zh") == [
+        "等级",
+        "用量",
+        "占比",
+        "工作速率",
+        "调用中位",
+        "回合中位",
+        "推理占比",
+        "缓存率",
+        "样本",
+    ]
+    assert effort_column_labels("en")[0] == "Effort"

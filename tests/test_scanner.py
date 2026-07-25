@@ -83,6 +83,36 @@ def subagent_trigger_event(timestamp: str) -> dict[str, object]:
     }
 
 
+def task_started_event(timestamp: str, turn_id: str) -> dict[str, object]:
+    return {
+        "timestamp": timestamp,
+        "type": "event_msg",
+        "payload": {"type": "task_started", "turn_id": turn_id},
+    }
+
+
+def turn_context_event(
+    timestamp: str,
+    turn_id: str,
+    *,
+    effort: str,
+    model: str = "gpt-test",
+) -> dict[str, object]:
+    return {
+        "timestamp": timestamp,
+        "type": "turn_context",
+        "payload": {"turn_id": turn_id, "effort": effort, "model": model},
+    }
+
+
+def task_complete_event(timestamp: str, turn_id: str) -> dict[str, object]:
+    return {
+        "timestamp": timestamp,
+        "type": "event_msg",
+        "payload": {"type": "task_complete", "turn_id": turn_id},
+    }
+
+
 def make_home(tmp_path: Path, *, auth_mode: str = "apikey") -> Path:
     home = tmp_path / "codex-home"
     (home / "sessions" / "2026" / "07" / "25").mkdir(parents=True)
@@ -179,6 +209,45 @@ def test_subagent_without_task_trigger_preserves_usage_with_warning(tmp_path: Pa
     result = scan_codex_usage(home, all_time_window(), now=NOW)
     assert result.usage.total_tokens == 55
     assert result.warnings["subagent_history_boundary_missing"] == 1
+
+
+def test_effort_usage_tracks_turns_calls_and_worker_time(tmp_path: Path) -> None:
+    home = make_home(tmp_path)
+    write_session(
+        home,
+        "effort",
+        [
+            session_meta("root", "2026-07-25T01:00:00Z"),
+            task_started_event("2026-07-25T01:00:00Z", "turn-medium-1"),
+            turn_context_event("2026-07-25T01:00:01Z", "turn-medium-1", effort="medium"),
+            token_event("2026-07-25T01:00:30Z", usage(90, 10), usage(90, 10)),
+            task_complete_event("2026-07-25T01:01:00Z", "turn-medium-1"),
+            task_started_event("2026-07-25T01:02:00Z", "turn-medium-2"),
+            token_event("2026-07-25T01:02:30Z", usage(181, 21), usage(91, 11)),
+            task_complete_event("2026-07-25T01:03:00Z", "turn-medium-2"),
+            task_started_event("2026-07-25T01:04:00Z", "turn-ultra"),
+            turn_context_event("2026-07-25T01:04:01Z", "turn-ultra", effort="ultra"),
+            token_event("2026-07-25T01:05:00Z", usage(451, 51), usage(270, 30)),
+            task_complete_event("2026-07-25T01:06:00Z", "turn-ultra"),
+        ],
+    )
+    result = scan_codex_usage(home, all_time_window(), now=NOW)
+
+    medium = result.by_effort["medium"]
+    assert medium.usage.total_tokens == 202
+    assert medium.model_label == "gpt-test"
+    assert medium.token_events == 2
+    assert medium.turns == 2
+    assert medium.median_event_tokens == 101
+    assert medium.median_turn_tokens == 101
+    assert medium.worker_hours == 120 / 3600
+    assert medium.tokens_per_worker_hour == 6060
+
+    ultra = result.by_effort["ultra"]
+    assert ultra.usage.total_tokens == 300
+    assert ultra.turns == 1
+    assert ultra.median_event_tokens == 300
+    assert ultra.tokens_per_worker_hour == 9000
 
 
 def test_import_history_is_excluded_but_continuation_is_counted(tmp_path: Path) -> None:

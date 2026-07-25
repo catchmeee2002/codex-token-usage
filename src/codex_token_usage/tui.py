@@ -19,6 +19,31 @@ from .timeparse import TimeParseError, build_window
 
 
 SUPPORTED_LANGUAGES = ("zh", "en")
+EFFORT_ORDER = {name: index for index, name in enumerate(("low", "medium", "high", "xhigh", "max", "ultra", "unknown"))}
+EFFORT_COLUMN_COPY = {
+    "zh": {
+        "effort": "等级",
+        "tokens": "用量",
+        "share": "占比",
+        "burn": "工作速率",
+        "call": "调用中位",
+        "turn": "回合中位",
+        "reason": "推理占比",
+        "cache": "缓存率",
+        "samples": "样本",
+    },
+    "en": {
+        "effort": "Effort",
+        "tokens": "Tokens",
+        "share": "Share",
+        "burn": "Worker rate",
+        "call": "Call p50",
+        "turn": "Turn p50",
+        "reason": "Reasoning",
+        "cache": "Cache",
+        "samples": "Turns",
+    },
+}
 
 
 @dataclass(frozen=True)
@@ -68,8 +93,9 @@ TEXT = {
         "custom_canceled": "已取消自定义日期",
         "too_small": "终端窗口太小，请至少调整到 78×22。",
         "dashboard": "本机 Token 用量仪表盘",
+        "effort_dashboard": "Effort 消耗分析",
         "range_menu": "统计范围",
-        "footer": "↑↓ 范围  ←→ 日期  Enter 应用  r 刷新  l English  q 退出",
+        "footer": "↑↓ 范围  ←→ 日期  Tab 页面  Enter 应用  r 刷新  l English  q 退出",
         "current": "当前：{scope}",
         "selected": "选中：{range}  {tokens} Token",
         "total": "总 Token",
@@ -82,6 +108,14 @@ TEXT = {
         "bucket": "  {days}天/柱",
         "no_chart": "所选范围内没有可绘制的每日数据。",
         "warning": "警告：发现 {count} 个数据完整性问题",
+        "effort_coverage": "Effort 归因：{coverage:.2f}%  模型：{models}",
+        "effort_total": "已归因 Token：{tokens}",
+        "effort_none": "所选范围内没有可归因的 Effort 数据。",
+        "effort_explain_title": "指标说明",
+        "effort_explain_1": "用量/占比：该等级总 Token / 占全部 Token 的比例",
+        "effort_explain_2": "工作速率：总 Token ÷ Agent 工作小时（并行线程时间分别累计）",
+        "effort_explain_3": "调用中位/回合中位：单次模型调用 / 单个 Turn 总 Token 的中位数",
+        "effort_explain_4": "推理占比/缓存率/样本：推理输出÷输出 / 缓存输入÷输入 / Turn 数",
         "all_scope": "全部历史",
         "custom_scope": "自定义日期",
         "no_records": "无记录",
@@ -100,8 +134,9 @@ TEXT = {
         "custom_canceled": "Custom date range canceled",
         "too_small": "Terminal too small; resize it to at least 78x22.",
         "dashboard": "Local Token Usage Dashboard",
+        "effort_dashboard": "Effort Usage Analysis",
         "range_menu": "Time range",
-        "footer": "↑↓ range  ←→ date  Enter apply  r refresh  l 中文  q quit",
+        "footer": "↑↓ range  ←→ date  Tab page  Enter apply  r refresh  l 中文  q quit",
         "current": "Current: {scope}",
         "selected": "Selected: {range}  {tokens} tokens",
         "total": "Total tokens",
@@ -114,6 +149,14 @@ TEXT = {
         "bucket": "  {days}d/bar",
         "no_chart": "No daily data is available for this range.",
         "warning": "Warning: {count} data-integrity issues detected",
+        "effort_coverage": "Effort coverage: {coverage:.2f}%  Models: {models}",
+        "effort_total": "Attributed tokens: {tokens}",
+        "effort_none": "No attributable effort data is available for this range.",
+        "effort_explain_title": "Metric definitions",
+        "effort_explain_1": "Tokens/share: level total / share of all tokens",
+        "effort_explain_2": "Worker rate: tokens divided by summed agent worker-hours",
+        "effort_explain_3": "Call/turn p50: median tokens per model call / turn",
+        "effort_explain_4": "Reasoning/cache/turns: reasoning÷output / cached÷input / sample turns",
         "all_scope": "All history",
         "custom_scope": "Custom dates",
         "no_records": "no records",
@@ -138,6 +181,31 @@ def choice_labels(language: str) -> list[str]:
 
 def _number(value: int) -> str:
     return f"{value:,}"
+
+
+def _rate(value: float) -> str:
+    if value <= 0:
+        return "-"
+    if value >= 1_000_000:
+        return f"{value / 1_000_000:.1f}M/h"
+    if value >= 1_000:
+        return f"{value / 1_000:.1f}K/h"
+    return f"{value:.0f}/h"
+
+
+def effort_keys(result: ScanResult) -> list[str]:
+    return sorted(
+        (key for key, bucket in result.by_effort.items() if bucket.usage.total_tokens),
+        key=lambda key: (EFFORT_ORDER.get(key, len(EFFORT_ORDER)), key),
+    )
+
+
+def effort_column_labels(language: str) -> list[str]:
+    copy = EFFORT_COLUMN_COPY[_language(language)]
+    return [
+        copy[key]
+        for key in ("effort", "tokens", "share", "burn", "call", "turn", "reason", "cache", "samples")
+    ]
 
 
 def _scope_name(window: ScanWindow, language: str) -> str:
@@ -185,6 +253,7 @@ class TokenUsageTui:
         self.active_choice = 0
         self.chart_index = -1
         self.chart_bucket_count = 0
+        self.page = "usage"
         self.result: ScanResult | None = None
         self.status = self._t("ready")
         self.custom_from: str | None = None
@@ -314,7 +383,8 @@ class TokenUsageTui:
         self._draw_frame(height, width, left_width)
         title_attr = curses.A_BOLD | (curses.color_pair(1) if curses.has_colors() else 0)
         self._write(1, 2, "Codex Token Usage", width=left_width - 3, attr=title_attr)
-        self._write(1, left_width + 2, self._t("dashboard"), width=width - left_width - 4, attr=title_attr)
+        dashboard_key = "effort_dashboard" if self.page == "effort" else "dashboard"
+        self._write(1, left_width + 2, self._t(dashboard_key), width=width - left_width - 4, attr=title_attr)
         self._write(3, 2, self._t("range_menu"), width=left_width - 4, attr=curses.A_BOLD)
 
         for index, choice in enumerate(RANGE_CHOICES):
@@ -338,7 +408,10 @@ class TokenUsageTui:
             loading_attr = curses.A_BOLD | (curses.color_pair(2) if curses.has_colors() else 0)
             self._write(5, x, self.status, width=content_width, attr=loading_attr)
         else:
-            self._draw_result(x=x, width=content_width, height=height)
+            if self.page == "effort":
+                self._draw_effort_result(x=x, width=content_width, height=height)
+            else:
+                self._draw_result(x=x, width=content_width, height=height)
 
         self._write(height - 1, 2, self._t("footer"), width=width - 4, attr=curses.A_DIM)
         self.screen.refresh()
@@ -373,30 +446,16 @@ class TokenUsageTui:
             self._write(
                 5,
                 x,
-                self._t(
-                    "selected",
-                    range=selected_range,
-                    tokens=_number(bucket.total_tokens),
-                ),
+                self._t("selected", range=selected_range, tokens=_number(bucket.total_tokens)),
                 width=width,
                 attr=curses.A_BOLD,
             )
+
         label_width = 18
         self._write(6, x, self._t("total"), width=label_width, attr=curses.A_BOLD)
-        self._write(
-            6,
-            x + label_width,
-            _number(result.usage.total_tokens),
-            width=width - label_width,
-            attr=curses.A_BOLD,
-        )
+        self._write(6, x + label_width, _number(result.usage.total_tokens), width=width - label_width, attr=curses.A_BOLD)
         self._write(7, x, self._t("approx"), width=label_width)
-        self._write(
-            7,
-            x + label_width,
-            _compact_number(result.usage.total_tokens, self.language),
-            width=width - label_width,
-        )
+        self._write(7, x + label_width, _compact_number(result.usage.total_tokens, self.language), width=width - label_width)
         self._write(8, x, self._t("input_output"), width=label_width)
         self._write(
             8,
@@ -449,9 +508,115 @@ class TokenUsageTui:
                 attr=warning_attr,
             )
 
+    def _draw_effort_result(self, *, x: int, width: int, height: int) -> None:
+        assert self.result is not None
+        result = self.result
+        green = curses.color_pair(3) if curses.has_colors() else 0
+        self._write(
+            3,
+            x,
+            self._t("current", scope=_scope_name(result.window, self.language)),
+            width=width,
+            attr=curses.A_BOLD | green,
+        )
+        self._write(4, x, _range_text(result, self.language), width=width, attr=curses.A_DIM)
+
+        keys = effort_keys(result)
+        attributed = sum(result.by_effort[key].usage.total_tokens for key in keys if key != "unknown")
+        coverage = attributed / result.usage.total_tokens * 100 if result.usage.total_tokens else 0.0
+        models = sorted(
+            model
+            for key in keys
+            if key != "unknown"
+            for model in result.by_effort[key].models
+        )
+        model_text = ", ".join(dict.fromkeys(models)) if models else "unknown"
+        self._write(5, x, self._t("effort_coverage", coverage=coverage, models=model_text), width=width)
+        self._write(6, x, self._t("effort_total", tokens=_number(attributed)), width=width, attr=curses.A_BOLD)
+        if not keys:
+            self._write(8, x, self._t("effort_none"), width=width, attr=curses.A_DIM)
+            return
+
+        if width >= 92:
+            columns = (
+                (0, 8, "effort"), (9, 12, "tokens"), (22, 8, "share"),
+                (31, 10, "burn"), (42, 11, "call"), (54, 12, "turn"),
+                (67, 9, "reason"), (77, 9, "cache"), (87, 5, "samples"),
+            )
+        elif width >= 66:
+            columns = (
+                (0, 9, "effort"), (10, 13, "tokens"), (24, 8, "share"),
+                (33, 13, "call"), (47, 12, "reason"), (60, 6, "samples"),
+            )
+        else:
+            columns = (
+                (0, 8, "effort"), (9, 12, "tokens"), (22, 8, "share"),
+                (31, 11, "reason"), (43, 6, "samples"),
+            )
+        column_copy = EFFORT_COLUMN_COPY[self.language]
+        for offset, column_width, column_key in columns:
+            self._write(
+                8,
+                x + offset,
+                column_copy[column_key],
+                width=column_width,
+                attr=curses.A_BOLD | curses.A_DIM,
+            )
+
+        total = result.usage.total_tokens
+        max_rows = 5 if height < 26 else 7
+        for index, key in enumerate(keys[:max_rows]):
+            bucket = result.by_effort[key]
+            share = bucket.usage.total_tokens / total * 100 if total else 0.0
+            values = {
+                "effort": key,
+                "tokens": _compact_number(bucket.usage.total_tokens, self.language),
+                "share": f"{share:.1f}%",
+                "burn": _rate(bucket.tokens_per_worker_hour),
+                "call": _compact_number(bucket.median_event_tokens, self.language),
+                "turn": _compact_number(bucket.median_turn_tokens, self.language),
+                "reason": f"{bucket.reasoning_ratio * 100:.1f}%",
+                "cache": f"{bucket.cache_ratio * 100:.1f}%",
+                "samples": str(bucket.turns),
+            }
+            if key in ("max", "ultra"):
+                attr = curses.color_pair(2) if curses.has_colors() else curses.A_BOLD
+            elif key in ("high", "xhigh"):
+                attr = curses.color_pair(1) if curses.has_colors() else curses.A_BOLD
+            else:
+                attr = curses.color_pair(3) if curses.has_colors() else 0
+            for offset, column_width, column_key in columns:
+                self._write(10 + index, x + offset, values[column_key], width=column_width, attr=attr)
+
+        explanation_keys = (
+            "effort_explain_title",
+            "effort_explain_1",
+            "effort_explain_2",
+            "effort_explain_3",
+            "effort_explain_4",
+        )
+        explanation_start = height - 9 if height >= 28 else height - 6
+        if height < 28:
+            explanation_keys = explanation_keys[1:]
+        for offset, text_key in enumerate(explanation_keys):
+            attr = curses.A_BOLD if text_key == "effort_explain_title" else curses.A_DIM
+            self._write(explanation_start + offset, x, self._t(text_key), width=width, attr=attr)
+        if result.warnings:
+            warning_attr = curses.A_BOLD | (curses.color_pair(2) if curses.has_colors() else 0)
+            self._write(
+                height - 3,
+                x,
+                self._t("warning", count=sum(result.warnings.values())),
+                width=width,
+                attr=warning_attr,
+            )
+
     def _toggle_language(self) -> None:
         self.language = "en" if self.language == "zh" else "zh"
         self.status = self._t("language_changed")
+
+    def _toggle_page(self) -> None:
+        self.page = "effort" if self.page == "usage" else "usage"
 
     def _move_chart_selection(self, offset: int) -> None:
         if self.chart_bucket_count <= 0:
@@ -482,6 +647,8 @@ class TokenUsageTui:
                 self._move_chart_selection(1)
             elif key in (ord("l"), ord("L")):
                 self._toggle_language()
+            elif key in (9, ord("e"), ord("E")):
+                self._toggle_page()
             elif key == curses.KEY_RESIZE:
                 continue
 
