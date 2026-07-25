@@ -4,6 +4,14 @@ All notable changes to this project are documented in this file. The format foll
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.4.0] - 2026-07-26
+
+### Added
+
+- Left/right chart navigation in the terminal UI
+- A highlighted selected bar with its exact date or date-range token total
+- Exact per-bar values below charts in non-interactive text output
+
 ## [0.3.0] - 2026-07-26
 
 ### Changed

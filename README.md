@@ -19,6 +19,7 @@ Codex usage after an imported thread is continued.
 - Press `l` in the UI to switch languages instantly
 - Last 24 hours, last 7 days, last 30 days, all history, and custom date ranges
 - Conventional daily charts with dates on the x-axis, tokens on the y-axis, and partial-day markers
+- Keyboard-selectable chart bars with exact date or date-range totals
 - Human-readable Chinese or English text output
 - Stable JSON output with `schema_version: 1`
 - Root and subagent usage breakdowns
@@ -60,6 +61,7 @@ Controls:
 | Key | Action |
 |---|---|
 | `↑` / `↓` or `j` / `k` | Select a time range |
+| `←` / `→` or `[` / `]` | Select a chart bar and show its exact total |
 | `Enter` | Apply the selected range |
 | `r` | Refresh the current report |
 | `l` | Switch between Chinese and English |

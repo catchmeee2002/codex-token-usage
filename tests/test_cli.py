@@ -63,6 +63,9 @@ def test_default_window_and_human_output(tmp_path: Path) -> None:
     assert "█" in output
     assert "7/25*" in output
     assert "└" in output
+    assert "精确值" in output
+    assert "2026-07-25*" in output
+    assert "30" in output
 
 
 def test_all_time_human_output_is_clearly_labeled(tmp_path: Path) -> None:
@@ -103,6 +106,7 @@ def test_no_daily_hides_chart(tmp_path: Path) -> None:
     )
     assert code == 0
     assert "Token ↑" not in stdout.getvalue()
+    assert "精确值" not in stdout.getvalue()
 
 
 def test_ui_option_is_available() -> None:

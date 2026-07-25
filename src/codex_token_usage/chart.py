@@ -25,6 +25,7 @@ class VerticalChart:
     buckets: list[ChartBucket]
     bucket_days: int
     partial: bool
+    selected_index: int | None
 
 
 @dataclass(frozen=True)
@@ -140,9 +141,11 @@ def _pad_left(text: str, width: int) -> str:
     return " " * max(0, width - display_width(text)) + text
 
 
-def _bar_slot(glyph: str, column_width: int) -> str:
+def _bar_slot(glyph: str, column_width: int, *, selected: bool) -> str:
     if glyph == " ":
         return " " * column_width
+    if selected:
+        glyph = "▓"
     bar_width = 1 if column_width < 3 else min(2, column_width - 1)
     left = (column_width - bar_width) // 2
     right = column_width - bar_width - left
@@ -154,6 +157,12 @@ def _date_label(value: date, *, partial: bool, column_width: int) -> str:
     if column_width >= 6 or value.day == 1:
         return f"{value.month}/{value.day}{marker}"
     return f"{value.day}{marker}"
+
+
+def bucket_range_label(bucket: ChartBucket) -> str:
+    if bucket.start == bucket.end:
+        return bucket.start.isoformat()
+    return f"{bucket.start.isoformat()}~{bucket.end.isoformat()}"
 
 
 def _label_axis(buckets: list[ChartBucket], column_width: int) -> str:
@@ -186,6 +195,7 @@ def build_daily_vertical_chart(
     width: int,
     height: int,
     language: str = "zh",
+    selected_index: int | None = None,
 ) -> VerticalChart | None:
     span = _daily_span(result)
     if span is None or width < 24 or height < 3:
@@ -210,6 +220,10 @@ def build_daily_vertical_chart(
         plot_width = max(1, width - axis_width - 2)
 
     column_width = max(1, min(6, plot_width // len(buckets)))
+    if selected_index is not None:
+        if selected_index < 0:
+            selected_index = len(buckets) + selected_index
+        selected_index = max(0, min(len(buckets) - 1, selected_index))
     units = [
         0
         if bucket.total_tokens == 0
@@ -230,9 +244,15 @@ def build_daily_vertical_chart(
             axis = "│"
         row_floor = (height - row - 1) * 8
         slots: list[str] = []
-        for value in units:
+        for index, value in enumerate(units):
             fill = max(0, min(8, value - row_floor))
-            slots.append(_bar_slot(FRACTION_BLOCKS[fill], column_width))
+            slots.append(
+                _bar_slot(
+                    FRACTION_BLOCKS[fill],
+                    column_width,
+                    selected=index == selected_index,
+                )
+            )
         lines.append(f"{_pad_left(label, axis_width)} {axis}{''.join(slots)}")
 
     plot_line_width = len(buckets) * column_width
@@ -243,4 +263,5 @@ def build_daily_vertical_chart(
         buckets=buckets,
         bucket_days=bucket_days,
         partial=any(bucket.partial for bucket in buckets),
+        selected_index=selected_index,
     )

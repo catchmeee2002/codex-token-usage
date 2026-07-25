@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from .chart import build_daily_vertical_chart
+from .chart import build_daily_vertical_chart, bucket_range_label
 from .model import ScanResult, Usage
 
 
@@ -74,7 +74,18 @@ def _chart_section(result: ScanResult, *, language: str) -> list[str]:
             title += f"  {chart.bucket_days}d/bar"
         if chart.partial:
             title += "  * partial"
-    return [title, *chart.lines]
+    labels = [
+        bucket_range_label(bucket) + ("*" if bucket.partial else "")
+        for bucket in chart.buckets
+    ]
+    label_width = max(len(label) for label in labels)
+    token_width = max(len(_number(bucket.total_tokens)) for bucket in chart.buckets)
+    detail_title = "精确值" if language == "zh" else "Exact values"
+    details = [
+        f"{label.ljust(label_width)}  {_number(bucket.total_tokens).rjust(token_width)}"
+        for label, bucket in zip(labels, chart.buckets)
+    ]
+    return [title, *chart.lines, "", detail_title, *details]
 
 
 def _duration_zh(label: str) -> str:

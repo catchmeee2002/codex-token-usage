@@ -8,6 +8,7 @@ from typing import TextIO
 
 from .chart import (
     build_daily_vertical_chart,
+    bucket_range_label,
     clip_display as _clip,
     compact_number as _compact_number,
     display_width as _display_width,
@@ -68,8 +69,9 @@ TEXT = {
         "too_small": "终端窗口太小，请至少调整到 78×22。",
         "dashboard": "本机 Token 用量仪表盘",
         "range_menu": "统计范围",
-        "footer": "↑↓/jk 选择  Enter 应用  r 刷新  l English  q/Esc 退出",
+        "footer": "↑↓ 范围  ←→ 日期  Enter 应用  r 刷新  l English  q 退出",
         "current": "当前：{scope}",
+        "selected": "选中：{range}  {tokens} Token",
         "total": "总 Token",
         "approx": "约合",
         "input_output": "输入 / 输出",
@@ -99,8 +101,9 @@ TEXT = {
         "too_small": "Terminal too small; resize it to at least 78x22.",
         "dashboard": "Local Token Usage Dashboard",
         "range_menu": "Time range",
-        "footer": "↑↓/jk select  Enter apply  r refresh  l 中文  q/Esc quit",
+        "footer": "↑↓ range  ←→ date  Enter apply  r refresh  l 中文  q quit",
         "current": "Current: {scope}",
+        "selected": "Selected: {range}  {tokens} tokens",
         "total": "Total tokens",
         "approx": "Compact",
         "input_output": "Input / output",
@@ -180,6 +183,8 @@ class TokenUsageTui:
         self.language = _language(language)
         self.cursor = 0
         self.active_choice = 0
+        self.chart_index = -1
+        self.chart_bucket_count = 0
         self.result: ScanResult | None = None
         self.status = self._t("ready")
         self.custom_from: str | None = None
@@ -224,6 +229,7 @@ class TokenUsageTui:
 
     def _load(self, index: int, *, prompt_custom: bool = True) -> None:
         choice = RANGE_CHOICES[index]
+        reset_chart = index != self.active_choice or (choice.custom and prompt_custom)
         if choice.custom:
             if prompt_custom and not self._prompt_custom_range():
                 return
@@ -232,6 +238,9 @@ class TokenUsageTui:
                 return
         self.now = datetime.now(timezone.utc)
         self.active_choice = index
+        if reset_chart:
+            self.chart_index = -1
+        self.chart_bucket_count = 0
         label, _ = self._choice_text(choice)
         self.status = self._t("scanning", choice=label)
         self.result = None
@@ -346,6 +355,32 @@ class TokenUsageTui:
             attr=curses.A_BOLD | green,
         )
         self._write(4, x, _range_text(result, self.language), width=width, attr=curses.A_DIM)
+        available_rows = max(0, height - (16 if result.warnings else 14))
+        chart = build_daily_vertical_chart(
+            result,
+            width=width,
+            height=max(3, available_rows - 2),
+            language=self.language,
+            selected_index=self.chart_index,
+        )
+        if chart is None or chart.selected_index is None:
+            self.chart_bucket_count = 0
+        else:
+            self.chart_index = chart.selected_index
+            self.chart_bucket_count = len(chart.buckets)
+            bucket = chart.buckets[chart.selected_index]
+            selected_range = bucket_range_label(bucket) + ("*" if bucket.partial else "")
+            self._write(
+                5,
+                x,
+                self._t(
+                    "selected",
+                    range=selected_range,
+                    tokens=_number(bucket.total_tokens),
+                ),
+                width=width,
+                attr=curses.A_BOLD,
+            )
         label_width = 18
         self._write(6, x, self._t("total"), width=label_width, attr=curses.A_BOLD)
         self._write(
@@ -392,13 +427,6 @@ class TokenUsageTui:
             width=width - label_width,
         )
 
-        available_rows = max(0, height - (16 if result.warnings else 14))
-        chart = build_daily_vertical_chart(
-            result,
-            width=width,
-            height=max(3, available_rows - 2),
-            language=self.language,
-        )
         chart_title = self._t("chart")
         if chart is not None and chart.bucket_days > 1:
             chart_title += self._t("bucket", days=chart.bucket_days)
@@ -425,6 +453,14 @@ class TokenUsageTui:
         self.language = "en" if self.language == "zh" else "zh"
         self.status = self._t("language_changed")
 
+    def _move_chart_selection(self, offset: int) -> None:
+        if self.chart_bucket_count <= 0:
+            return
+        self.chart_index = max(
+            0,
+            min(self.chart_bucket_count - 1, self.chart_index + offset),
+        )
+
     def run(self) -> int:
         self._load(0)
         while True:
@@ -440,6 +476,10 @@ class TokenUsageTui:
                 self._load(self.cursor)
             elif key in (ord("r"), ord("R")):
                 self._load(self.active_choice, prompt_custom=False)
+            elif key in (curses.KEY_LEFT, ord("[")):
+                self._move_chart_selection(-1)
+            elif key in (curses.KEY_RIGHT, ord("]")):
+                self._move_chart_selection(1)
             elif key in (ord("l"), ord("L")):
                 self._toggle_language()
             elif key == curses.KEY_RESIZE:

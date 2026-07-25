@@ -5,7 +5,7 @@ from codex_token_usage.chart import build_daily_vertical_chart
 from codex_token_usage.model import ScanResult, ScanWindow, Usage
 from codex_token_usage.scanner import scan_codex_usage
 from codex_token_usage.timeparse import build_window
-from codex_token_usage.tui import choice_labels
+from codex_token_usage.tui import TokenUsageTui, choice_labels
 
 from test_scanner import make_home, session_meta, token_event, usage, write_session
 
@@ -64,6 +64,11 @@ def test_vertical_chart_uses_date_x_axis_and_token_y_axis(tmp_path: Path) -> Non
     assert english is not None
     assert english.lines[0].lstrip().startswith("220")
 
+    selected = build_daily_vertical_chart(result, width=50, height=6, selected_index=-1)
+    assert selected is not None
+    assert selected.selected_index == 2
+    assert any("▓" in line for line in selected.lines)
+
 
 def test_vertical_chart_buckets_long_ranges_without_losing_totals() -> None:
     result = ScanResult(
@@ -86,3 +91,13 @@ def test_vertical_chart_buckets_long_ranges_without_losing_totals() -> None:
     assert chart.bucket_days > 1
     assert len(chart.buckets) <= 40
     assert sum(bucket.total_tokens for bucket in chart.buckets) == 30
+
+
+def test_tui_chart_selection_stops_at_edges() -> None:
+    tui = object.__new__(TokenUsageTui)
+    tui.chart_bucket_count = 3
+    tui.chart_index = 2
+    tui._move_chart_selection(1)
+    assert tui.chart_index == 2
+    tui._move_chart_selection(-1)
+    assert tui.chart_index == 1
