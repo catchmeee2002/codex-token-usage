@@ -75,6 +75,14 @@ def marker_event(timestamp: str) -> dict[str, object]:
     }
 
 
+def subagent_trigger_event(timestamp: str) -> dict[str, object]:
+    return {
+        "timestamp": timestamp,
+        "type": "inter_agent_communication_metadata",
+        "payload": {"trigger_turn": True},
+    }
+
+
 def make_home(tmp_path: Path, *, auth_mode: str = "apikey") -> Path:
     home = tmp_path / "codex-home"
     (home / "sessions" / "2026" / "07" / "25").mkdir(parents=True)
@@ -134,6 +142,43 @@ def test_first_session_meta_owns_subagent_file(tmp_path: Path) -> None:
     assert result.by_thread_type["subagent"].total_tokens == 55
     assert result.by_thread_type["root"].total_tokens == 0
     assert result.diagnostics["inherited_session_meta_records"] == 1
+
+
+def test_subagent_history_before_first_task_trigger_is_excluded(tmp_path: Path) -> None:
+    home = make_home(tmp_path)
+    write_session(
+        home,
+        "subagent-replay",
+        [
+            session_meta("child", "2026-07-25T01:00:00Z", thread_source="subagent"),
+            session_meta("parent", "2026-07-24T01:00:00Z"),
+            token_event("2026-07-25T01:00:01Z", usage(100, 10), usage(100, 10)),
+            token_event("2026-07-25T01:00:02Z", usage(250, 20), usage(150, 10)),
+            subagent_trigger_event("2026-07-25T01:00:03Z"),
+            token_event("2026-07-25T01:01:00Z", usage(300, 25), usage(50, 5)),
+        ],
+    )
+    result = scan_codex_usage(home, all_time_window(), now=NOW)
+    assert result.usage.total_tokens == 55
+    assert result.by_thread_type["subagent"].total_tokens == 55
+    assert result.diagnostics["subagent_history_events_excluded"] == 2
+    assert result.diagnostics["token_events_counted"] == 1
+    assert "subagent_history_boundary_missing" not in result.warnings
+
+
+def test_subagent_without_task_trigger_preserves_usage_with_warning(tmp_path: Path) -> None:
+    home = make_home(tmp_path)
+    write_session(
+        home,
+        "subagent-no-boundary",
+        [
+            session_meta("child", "2026-07-25T01:00:00Z", thread_source="subagent"),
+            token_event("2026-07-25T01:01:00Z", usage(50, 5), usage(50, 5)),
+        ],
+    )
+    result = scan_codex_usage(home, all_time_window(), now=NOW)
+    assert result.usage.total_tokens == 55
+    assert result.warnings["subagent_history_boundary_missing"] == 1
 
 
 def test_import_history_is_excluded_but_continuation_is_counted(tmp_path: Path) -> None:

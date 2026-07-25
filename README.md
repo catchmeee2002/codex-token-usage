@@ -128,10 +128,13 @@ The scanner therefore:
 
 1. Reads the first `session_meta` record as the owner of each rollout file.
 2. Counts `last_token_usage` only when the structured cumulative counter advances.
-3. Deduplicates exact event copies across files.
-4. Uses `external_agent_session_imports.json` and Codex's imported-session marker to exclude
+3. Excludes inherited parent-accounting events copied into a forked subagent before its first
+   structured task trigger, while retaining the subagent's genuine requests and inherited-context
+   input usage.
+4. Deduplicates exact event copies across files.
+5. Uses `external_agent_session_imports.json` and Codex's imported-session marker to exclude
    pre-import history.
-5. Continues counting genuine Codex calls made after an imported thread is resumed.
+6. Continues counting genuine Codex calls made after an imported thread is resumed.
 
 `total_tokens` means `input_tokens + output_tokens`. Cached input is a subset of input, and
 reasoning output is a subset of output.

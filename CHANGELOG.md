@@ -4,6 +4,13 @@ All notable changes to this project are documented in this file. The format foll
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- Excluded inherited parent token-accounting events replayed before a forked subagent's first task,
+  while continuing to count the subagent's genuine inherited-context input usage
+
 ## [0.4.0] - 2026-07-26
 
 ### Added

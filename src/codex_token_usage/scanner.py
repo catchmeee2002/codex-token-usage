@@ -25,6 +25,7 @@ class TokenEvent:
     last_usage: Mapping[str, Any]
     model_context_window: Any
     rate_limits: Any
+    before_subagent_trigger: bool
 
 
 @dataclass
@@ -32,6 +33,7 @@ class FileEvidence:
     first_meta: Mapping[str, Any] | None = None
     later_meta_count: int = 0
     import_marker_seen: bool = False
+    subagent_trigger_seen: bool = False
     token_events: list[TokenEvent] = field(default_factory=list)
 
 
@@ -80,6 +82,10 @@ def _consume_object(obj: Any, evidence: FileEvidence) -> None:
         else:
             evidence.later_meta_count += 1
         return
+    if obj.get("type") == "inter_agent_communication_metadata":
+        if payload.get("trigger_turn") is True:
+            evidence.subagent_trigger_seen = True
+        return
     if obj.get("type") != "event_msg":
         return
     if payload.get("type") == "agent_message":
@@ -102,6 +108,7 @@ def _consume_object(obj: Any, evidence: FileEvidence) -> None:
             last_usage=last_usage,
             model_context_window=info.get("model_context_window"),
             rate_limits=payload.get("rate_limits"),
+            before_subagent_trigger=not evidence.subagent_trigger_seen,
         )
     )
 
@@ -235,6 +242,8 @@ def scan_codex_usage(codex_home: Path, window: ScanWindow, *, now: datetime) -> 
             result.warn("session_files_without_thread_id")
             continue
         thread_type = "subagent" if meta.get("thread_source") == "subagent" else "root"
+        if thread_type == "subagent" and evidence.token_events and not evidence.subagent_trigger_seen:
+            result.warn("subagent_history_boundary_missing")
         thread_started_at = _parse_timestamp(meta.get("timestamp"))
         if thread_started_at is None:
             result.warn("invalid_session_start_timestamps")
@@ -255,6 +264,13 @@ def scan_codex_usage(codex_home: Path, window: ScanWindow, *, now: datetime) -> 
         thread_has_counted_usage = False
         for event in evidence.token_events:
             result.bump_diagnostic("token_events_seen")
+            if (
+                thread_type == "subagent"
+                and evidence.subagent_trigger_seen
+                and event.before_subagent_trigger
+            ):
+                result.bump_diagnostic("subagent_history_events_excluded")
+                continue
             try:
                 total_signature = cumulative_signature(event.total_usage)
                 last_signature = cumulative_signature(event.last_usage)

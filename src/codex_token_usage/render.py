@@ -21,6 +21,10 @@ WARNING_TEXT_EN = {
     "session_files_without_metadata": "session files without session metadata were skipped",
     "session_files_without_thread_id": "session files without a thread ID were skipped",
     "sessions_directory_missing": "the Codex sessions directory does not exist",
+    "subagent_history_boundary_missing": (
+        "a subagent file had token events but no structured task-trigger boundary; "
+        "its events were retained"
+    ),
     "token_counter_resets": "cumulative token counters decreased; a new segment was counted",
     "truncated_tail_lines": "unfinished final JSONL records were ignored",
     "unreadable_session_files": "session files could not be read",
@@ -41,6 +45,7 @@ WARNING_TEXT_ZH = {
     "session_files_without_metadata": "缺少会话元数据的文件已跳过",
     "session_files_without_thread_id": "缺少线程 ID 的会话文件已跳过",
     "sessions_directory_missing": "Codex 会话目录不存在",
+    "subagent_history_boundary_missing": "子代理文件缺少结构化任务触发边界，已保留其中的 Token 事件",
     "token_counter_resets": "累计 Token 计数发生回退，已按新分段统计",
     "truncated_tail_lines": "未写完的末尾 JSONL 记录已忽略",
     "unreadable_session_files": "部分会话文件无法读取",
@@ -191,6 +196,7 @@ def _render_zh(result: ScanResult, *, include_daily: bool) -> str:
             "数据完整性",
             f"  扫描会话文件：       {_number(diagnostics.get('session_files_scanned', 0))}",
             f"  计入 Token 事件：    {_number(diagnostics.get('token_events_counted', 0))}",
+            f"  排除子代理继承历史： {_number(diagnostics.get('subagent_history_events_excluded', 0))}",
             f"  忽略重复快照：       {_number(diagnostics.get('duplicate_token_snapshots_ignored', 0))}",
             f"  忽略完全重复事件：   {_number(diagnostics.get('exact_duplicate_events_ignored', 0))}",
         ]
@@ -262,6 +268,7 @@ def _render_en(result: ScanResult, *, include_daily: bool) -> str:
             "Integrity",
             f"  Session files scanned:       {_number(diagnostics.get('session_files_scanned', 0))}",
             f"  Token events counted:        {_number(diagnostics.get('token_events_counted', 0))}",
+            f"  Subagent history excluded:   {_number(diagnostics.get('subagent_history_events_excluded', 0))}",
             f"  Duplicate snapshots ignored: {_number(diagnostics.get('duplicate_token_snapshots_ignored', 0))}",
             f"  Exact duplicates ignored:    {_number(diagnostics.get('exact_duplicate_events_ignored', 0))}",
         ]

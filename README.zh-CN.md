@@ -126,9 +126,11 @@ Codex rollout 日志是追加写入的活动记录，不是账单导出。直接
 
 1. 使用每个 rollout 文件的第一条 `session_meta` 确定线程归属。
 2. 只有在结构化累计计数前进时才计入 `last_token_usage`。
-3. 跨文件去除完全相同的事件副本。
-4. 使用 `external_agent_session_imports.json` 和 Codex 导入标记排除导入前历史。
-5. 保留导入线程在 Codex 中继续使用后产生的真实调用。
+3. 排除 fork 子代理在首次结构化任务触发前复制的父线程历史记账事件，同时保留子代理真实请求及
+   其继承上下文产生的输入 Token。
+4. 跨文件去除完全相同的事件副本。
+5. 使用 `external_agent_session_imports.json` 和 Codex 导入标记排除导入前历史。
+6. 保留导入线程在 Codex 中继续使用后产生的真实调用。
 
 `total_tokens` 等于 `input_tokens + output_tokens`。缓存输入是输入的子集，推理输出是输出的子集。
 
