@@ -9,10 +9,13 @@ from typing import TextIO
 from .cache import CacheMode
 from .chart import (
     build_daily_vertical_chart,
+    build_hourly_vertical_chart,
     bucket_range_label,
     clip_display as _clip,
     compact_number as _compact_number,
     display_width as _display_width,
+    hour_bucket_range_label,
+    single_local_day,
 )
 from .model import ScanResult, ScanWindow, Usage
 from .scanner import scan_codex_usage
@@ -53,6 +56,7 @@ class RangeChoice:
     since: str | None = None
     all_time: bool = False
     custom: bool = False
+    single_day: bool = False
 
 
 RANGE_CHOICES = (
@@ -60,6 +64,7 @@ RANGE_CHOICES = (
     RangeChoice("last_24h", since="24h"),
     RangeChoice("last_30d", since="30d"),
     RangeChoice("all_time", all_time=True),
+    RangeChoice("single_day", single_day=True),
     RangeChoice("custom", custom=True),
 )
 
@@ -67,14 +72,16 @@ RANGE_CHOICES = (
 CHOICE_COPY = {
     "zh": {
         "last_7d": ("最近 7 天", "默认滚动窗口"),
-        "last_24h": ("最近 24 小时", "查看一天内的用量"),
+        "last_24h": ("最近 24 小时", "查看滚动一天用量"),
+        "single_day": ("单日小时分布", "选择日期并按小时查看"),
         "last_30d": ("最近 30 天", "查看月度趋势"),
         "all_time": ("全部历史", "扫描本机全部记录"),
         "custom": ("自定义日期", "输入开始和结束日期"),
     },
     "en": {
         "last_7d": ("Last 7 days", "Default window"),
-        "last_24h": ("Last 24 hours", "One-day usage"),
+        "last_24h": ("Last 24 hours", "Rolling one-day usage"),
+        "single_day": ("Single-day hourly", "Choose a date and view hours"),
         "last_30d": ("Last 30 days", "Monthly trend"),
         "all_time": ("All history", "All local records"),
         "custom": ("Custom dates", "Enter start/end"),
@@ -86,18 +93,21 @@ TEXT = {
     "zh": {
         "ready": "准备扫描…",
         "need_custom": "请先输入自定义日期",
+        "need_single_day": "请先输入单日日期",
         "scanning": "正在扫描：{choice}…",
         "date_error": "日期输入错误：{error}",
         "scan_complete": "扫描完成：{count} 个文件（复用 {hits}，增量 {incremental}，完整 {full}）",
         "rebuild_complete": "强制重扫完成：{count} 个文件（完整 {full}）",
         "prompt_start": "开始日期 YYYY-MM-DD（留空取消）：",
         "prompt_end": "结束日期 YYYY-MM-DD（留空表示现在）：",
+        "prompt_single_day": "日期 YYYY-MM-DD（留空取消）：",
         "custom_canceled": "已取消自定义日期",
+        "single_day_canceled": "已取消单日小时分布",
         "too_small": "终端窗口太小，请至少调整到 78×22。",
         "dashboard": "本机 Token 用量仪表盘",
         "effort_dashboard": "Effort 消耗分析",
         "range_menu": "统计范围",
-        "footer": "↑↓ 范围  ←→ 日期  Tab 页面  Enter 应用  r 增量刷新  R 强制重扫  l English  q 退出",
+        "footer": "↑↓ 范围  ←→ 柱  Tab 页面  Enter 应用  r 增量刷新  R 强制重扫  l English  q 退出",
         "current": "当前：{scope}",
         "selected": "选中：{range}  {tokens} Token",
         "total": "总 Token",
@@ -106,9 +116,11 @@ TEXT = {
         "cached_input": "缓存输入",
         "root_subagent": "主线程 / 子代理",
         "chart": "Token ↑  每日用量  日期 →",
+        "hourly_chart": "Token ↑  每小时用量  小时 →",
         "partial": "  * 部分日",
+        "day_in_progress": "  * 当日未结束",
         "bucket": "  {days}天/柱",
-        "no_chart": "所选范围内没有可绘制的每日数据。",
+        "no_chart": "所选范围内没有可绘制的用量数据。",
         "warning": "警告：发现 {count} 个数据完整性问题",
         "effort_coverage": "Effort 归因：{coverage:.2f}%  模型：{models}",
         "effort_total": "已归因 Token：{tokens}",
@@ -120,6 +132,7 @@ TEXT = {
         "effort_explain_4": "推理占比/缓存率/样本：推理输出÷输出 / 缓存输入÷输入 / Turn 数",
         "all_scope": "全部历史",
         "custom_scope": "自定义日期",
+        "single_day_scope": "单日小时分布",
         "no_records": "无记录",
         "all_range": "{first} 起，统计至 {end}",
         "language_changed": "界面语言已切换为中文",
@@ -128,18 +141,21 @@ TEXT = {
     "en": {
         "ready": "Ready to scan…",
         "need_custom": "Enter a custom date range first",
+        "need_single_day": "Enter a single date first",
         "scanning": "Scanning: {choice}…",
         "date_error": "Invalid date input: {error}",
         "scan_complete": "Scan complete: {count} files ({hits} reused, {incremental} incremental, {full} full)",
         "rebuild_complete": "Forced rescan complete: {count} files ({full} full)",
         "prompt_start": "Start date YYYY-MM-DD (blank cancels): ",
         "prompt_end": "End date YYYY-MM-DD (blank means now): ",
+        "prompt_single_day": "Date YYYY-MM-DD (blank cancels): ",
         "custom_canceled": "Custom date range canceled",
+        "single_day_canceled": "Single-day hourly view canceled",
         "too_small": "Terminal too small; resize it to at least 78x22.",
         "dashboard": "Local Token Usage Dashboard",
         "effort_dashboard": "Effort Usage Analysis",
         "range_menu": "Time range",
-        "footer": "↑↓ range  ←→ date  Tab page  Enter apply  r refresh  R rescan  l 中文  q quit",
+        "footer": "↑↓ range  ←→ bar  Tab page  Enter apply  r refresh  R rescan  l 中文  q quit",
         "current": "Current: {scope}",
         "selected": "Selected: {range}  {tokens} tokens",
         "total": "Total tokens",
@@ -148,9 +164,11 @@ TEXT = {
         "cached_input": "Cached input",
         "root_subagent": "Root / subagent",
         "chart": "Tokens ↑  Daily usage  Date →",
+        "hourly_chart": "Tokens ↑  Hourly usage  Hour →",
         "partial": "  * partial",
+        "day_in_progress": "  * day in progress",
         "bucket": "  {days}d/bar",
-        "no_chart": "No daily data is available for this range.",
+        "no_chart": "No usage data is available for this range.",
         "warning": "Warning: {count} data-integrity issues detected",
         "effort_coverage": "Effort coverage: {coverage:.2f}%  Models: {models}",
         "effort_total": "Attributed tokens: {tokens}",
@@ -162,6 +180,7 @@ TEXT = {
         "effort_explain_4": "Reasoning/cache/turns: reasoning÷output / cached÷input / sample turns",
         "all_scope": "All history",
         "custom_scope": "Custom dates",
+        "single_day_scope": "Single-day hourly",
         "no_records": "no records",
         "all_range": "From {first} through {end}",
         "language_changed": "Interface language switched to English",
@@ -224,6 +243,8 @@ def _scope_name(window: ScanWindow, language: str) -> str:
         units = {"m": "分钟", "h": "小时", "d": "天", "w": "周"}
         unit = units.get(value[-1:], "")
         return f"最近 {value[:-1]} {unit}" if unit else window.label
+    if window.label == "single day":
+        return copy["single_day_scope"]
     return copy["custom_scope"]
 
 
@@ -262,6 +283,7 @@ class TokenUsageTui:
         self.status = self._t("ready")
         self.custom_from: str | None = None
         self.custom_to: str | None = None
+        self.single_day_date: str | None = None
         self.cache_mode: CacheMode = "disabled" if cache_mode == "disabled" else "use"
         self.next_cache_mode: CacheMode | None = "rebuild" if cache_mode == "rebuild" else None
         self._init_screen()
@@ -293,14 +315,28 @@ class TokenUsageTui:
             pass
 
     def _window_for_choice(self, choice: RangeChoice) -> ScanWindow:
-        return build_window(
+        from_value = self.custom_from if choice.custom else None
+        to_value = self.custom_to if choice.custom else None
+        if choice.single_day:
+            from_value = self.single_day_date
+            to_value = self.single_day_date
+        window = build_window(
             now=self.now,
             timezone_name=self.timezone_name,
             all_time=choice.all_time,
             since=choice.since,
-            from_value=self.custom_from if choice.custom else None,
-            to_value=self.custom_to if choice.custom else None,
+            from_value=from_value,
+            to_value=to_value,
         )
+        if choice.single_day:
+            return ScanWindow(
+                start=window.start,
+                end=window.end,
+                timezone=window.timezone,
+                timezone_name=window.timezone_name,
+                label="single day",
+            )
+        return window
 
     def _load(
         self,
@@ -310,7 +346,15 @@ class TokenUsageTui:
         cache_mode: CacheMode | None = None,
     ) -> None:
         choice = RANGE_CHOICES[index]
-        reset_chart = index != self.active_choice or (choice.custom and prompt_custom)
+        reset_chart = index != self.active_choice or (
+            (choice.custom or choice.single_day) and prompt_custom
+        )
+        if choice.single_day:
+            if prompt_custom and not self._prompt_single_day():
+                return
+            if self.single_day_date is None:
+                self.status = self._t("need_single_day")
+                return
         if choice.custom:
             if prompt_custom and not self._prompt_custom_range():
                 return
@@ -373,6 +417,14 @@ class TokenUsageTui:
         end = self._prompt(self._t("prompt_end"))
         self.custom_from = start
         self.custom_to = end or None
+        return True
+
+    def _prompt_single_day(self) -> bool:
+        selected = self._prompt(self._t("prompt_single_day"))
+        if not selected:
+            self.status = self._t("single_day_canceled")
+            return False
+        self.single_day_date = selected
         return True
 
     def _draw_frame(self, height: int, width: int, left_width: int) -> None:
@@ -452,12 +504,23 @@ class TokenUsageTui:
         )
         self._write(4, x, _range_text(result, self.language), width=width, attr=curses.A_DIM)
         available_rows = max(0, height - (16 if result.warnings else 14))
-        chart = build_daily_vertical_chart(
-            result,
-            width=width,
-            height=max(3, available_rows - 2),
-            language=self.language,
-            selected_index=self.chart_index,
+        hourly = single_local_day(result) is not None
+        chart = (
+            build_hourly_vertical_chart(
+                result,
+                width=width,
+                height=max(3, available_rows - 2),
+                language=self.language,
+                selected_index=self.chart_index,
+            )
+            if hourly
+            else build_daily_vertical_chart(
+                result,
+                width=width,
+                height=max(3, available_rows - 2),
+                language=self.language,
+                selected_index=self.chart_index,
+            )
         )
         if chart is None or chart.selected_index is None:
             self.chart_bucket_count = 0
@@ -465,7 +528,11 @@ class TokenUsageTui:
             self.chart_index = chart.selected_index
             self.chart_bucket_count = len(chart.buckets)
             bucket = chart.buckets[chart.selected_index]
-            selected_range = bucket_range_label(bucket) + ("*" if bucket.partial else "")
+            selected_range = (
+                hour_bucket_range_label(bucket)
+                if hourly
+                else bucket_range_label(bucket) + ("*" if bucket.partial else "")
+            )
             self._write(
                 5,
                 x,
@@ -509,11 +576,11 @@ class TokenUsageTui:
             width=width - label_width,
         )
 
-        chart_title = self._t("chart")
-        if chart is not None and chart.bucket_days > 1:
+        chart_title = self._t("hourly_chart" if hourly else "chart")
+        if chart is not None and not hourly and chart.bucket_days > 1:
             chart_title += self._t("bucket", days=chart.bucket_days)
         if chart is not None and chart.partial:
-            chart_title += self._t("partial")
+            chart_title += self._t("day_in_progress" if hourly else "partial")
         self._write(11, x, chart_title, width=width, attr=curses.A_BOLD)
         if chart is None:
             self._write(12, x, self._t("no_chart"), width=width, attr=curses.A_DIM)

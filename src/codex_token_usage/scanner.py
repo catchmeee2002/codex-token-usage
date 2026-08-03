@@ -48,6 +48,7 @@ class FileEvidence:
     first_meta: Mapping[str, Any] | None = None
     later_meta_count: int = 0
     import_marker_seen: bool = False
+    import_marker_timestamp: Any = None
     subagent_trigger_seen: bool = False
     current_turn_id: str | None = None
     current_effort: str | None = None
@@ -178,6 +179,8 @@ def _consume_object(obj: Any, evidence: FileEvidence) -> None:
     if payload.get("type") == "agent_message":
         if payload.get("message") == IMPORT_MARKER:
             evidence.import_marker_seen = True
+            if evidence.import_marker_timestamp is None:
+                evidence.import_marker_timestamp = obj.get("timestamp")
         return
     if payload.get("type") != "token_count":
         return
@@ -234,7 +237,7 @@ def _evidence_json(evidence: FileEvidence) -> str:
     payload = {
         "m": evidence.first_meta,
         "lm": evidence.later_meta_count,
-        "im": evidence.import_marker_seen,
+        "im": [evidence.import_marker_seen, evidence.import_marker_timestamp],
         "st": evidence.subagent_trigger_seen,
         "cs": [evidence.current_turn_id, evidence.current_effort, evidence.current_model],
         "tw": [
@@ -265,11 +268,13 @@ def _evidence_from_json(raw: str) -> FileEvidence:
     payload = json.loads(raw)
     if not isinstance(payload, dict):
         raise ValueError("cached evidence is not an object")
+    marker = payload.get("im", [False, None])
     current = payload.get("cs", [None, None, None])
     evidence = FileEvidence(
         first_meta=payload.get("m"),
         later_meta_count=int(payload.get("lm", 0)),
-        import_marker_seen=bool(payload.get("im", False)),
+        import_marker_seen=bool(marker[0]),
+        import_marker_timestamp=marker[1],
         subagent_trigger_seen=bool(payload.get("st", False)),
         current_turn_id=current[0],
         current_effort=current[1],
@@ -452,6 +457,7 @@ def _incremental_seed(evidence: FileEvidence) -> FileEvidence:
     return FileEvidence(
         first_meta=evidence.first_meta,
         import_marker_seen=evidence.import_marker_seen,
+        import_marker_timestamp=evidence.import_marker_timestamp,
         subagent_trigger_seen=evidence.subagent_trigger_seen,
         current_turn_id=evidence.current_turn_id,
         current_effort=evidence.current_effort,
@@ -465,6 +471,8 @@ def _merge_evidence(base: FileEvidence, delta: FileEvidence) -> FileEvidence:
     base.later_meta_count += delta.later_meta_count
     if delta.import_marker_seen:
         base.import_marker_seen = True
+        if base.import_marker_timestamp is None:
+            base.import_marker_timestamp = delta.import_marker_timestamp
     base.subagent_trigger_seen = delta.subagent_trigger_seen
     base.current_turn_id = delta.current_turn_id
     base.current_effort = delta.current_effort
@@ -700,6 +708,10 @@ def scan_codex_usage(
         thread_started_at = _parse_timestamp(meta.get("timestamp"))
         if thread_started_at is None:
             result.warn("invalid_session_start_timestamps")
+        marker_boundary = _parse_timestamp(evidence.import_marker_timestamp)
+        if evidence.import_marker_seen and marker_boundary is None:
+            result.warn("invalid_import_marker_timestamps")
+
         ledger_record = imported_records.get(thread_id)
         ledger_imported = ledger_record is not None
         marker_imported = evidence.import_marker_seen
@@ -707,7 +719,9 @@ def scan_codex_usage(
             result.warn("import_evidence_mismatches")
         is_imported = ledger_imported or marker_imported
         import_boundary = (
-            ledger_record.imported_at if ledger_record and ledger_record.imported_at else thread_started_at
+            ledger_record.imported_at
+            if ledger_record and ledger_record.imported_at
+            else marker_boundary or thread_started_at
         )
         if is_imported:
             imported_threads_seen.add(thread_id)
@@ -764,14 +778,17 @@ def scan_codex_usage(
                     result.bump_diagnostic("untimed_events_outside_bounded_window")
                     continue
                 day = None
+                hour = None
             else:
                 if not window.includes(timestamp):
                     result.bump_diagnostic("token_events_outside_window")
                     continue
-                day = timestamp.astimezone(window.timezone).date().isoformat()
+                local_timestamp = timestamp.astimezone(window.timezone)
+                day = local_timestamp.date().isoformat()
+                hour = local_timestamp.strftime("%Y-%m-%dT%H")
 
             usage = Usage(*event.usage_values)
-            result.add_usage(usage, thread_type, day)
+            result.add_usage(usage, thread_type, day, hour)
             turn_key = f"{thread_id}:{event.turn_id}" if event.turn_id else None
             result.add_effort_usage(
                 usage,

@@ -175,6 +175,7 @@ class ScanResult:
         default_factory=lambda: {"root": Usage(), "subagent": Usage(), "unknown": Usage()}
     )
     daily: dict[str, Usage] = field(default_factory=dict)
+    hourly: dict[str, Usage] = field(default_factory=dict)
     by_effort: dict[str, EffortUsage] = field(default_factory=dict)
     diagnostics: dict[str, int] = field(default_factory=dict)
     warnings: dict[str, int] = field(default_factory=dict)
@@ -185,11 +186,19 @@ class ScanResult:
     def warn(self, code: str, amount: int = 1) -> None:
         self.warnings[code] = self.warnings.get(code, 0) + amount
 
-    def add_usage(self, usage: Usage, thread_type: str, day: str | None) -> None:
+    def add_usage(
+        self,
+        usage: Usage,
+        thread_type: str,
+        day: str | None,
+        hour: str | None = None,
+    ) -> None:
         self.usage.add(usage)
         self.by_thread_type.setdefault(thread_type, Usage()).add(usage)
         if day is not None:
             self.daily.setdefault(day, Usage()).add(usage)
+        if hour is not None:
+            self.hourly.setdefault(hour, Usage()).add(usage)
 
     def add_effort_usage(
         self,

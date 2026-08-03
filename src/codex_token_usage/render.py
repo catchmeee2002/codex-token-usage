@@ -2,7 +2,13 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from .chart import build_daily_vertical_chart, bucket_range_label
+from .chart import (
+    build_daily_vertical_chart,
+    build_hourly_vertical_chart,
+    bucket_range_label,
+    hour_bucket_range_label,
+    single_local_day,
+)
 from .model import ScanResult, Usage
 
 
@@ -14,6 +20,7 @@ WARNING_TEXT_EN = {
     "import_evidence_mismatches": "the import ledger and imported-session marker disagreed",
     "invalid_import_ledger": "the imported-session ledger could not be parsed",
     "invalid_import_ledger_records": "invalid records were skipped in the imported-session ledger",
+    "invalid_import_marker_timestamps": "an imported-session marker had an invalid timestamp",
     "invalid_session_start_timestamps": "session start timestamps could not be parsed",
     "invalid_token_event_timestamps": "token events had invalid timestamps",
     "invalid_token_usage_events": "token events contained invalid counters and were skipped",
@@ -38,6 +45,7 @@ WARNING_TEXT_ZH = {
     "import_evidence_mismatches": "导入账本与会话导入标记不一致",
     "invalid_import_ledger": "无法解析导入会话账本",
     "invalid_import_ledger_records": "导入会话账本中的无效记录已跳过",
+    "invalid_import_marker_timestamps": "导入会话标记的时间戳无效",
     "invalid_session_start_timestamps": "部分会话开始时间无法解析",
     "invalid_token_event_timestamps": "部分 Token 事件时间戳无效",
     "invalid_token_usage_events": "部分 Token 计数无效，已跳过",
@@ -60,14 +68,27 @@ def _local_time(value: datetime, result: ScanResult) -> str:
 
 
 def _chart_section(result: ScanResult, *, language: str) -> list[str]:
-    chart = build_daily_vertical_chart(result, width=78, height=8, language=language)
+    hourly = single_local_day(result) is not None
+    chart = (
+        build_hourly_vertical_chart(result, width=78, height=8, language=language)
+        if hourly
+        else build_daily_vertical_chart(result, width=78, height=8, language=language)
+    )
     if chart is None:
         return [
             "所选范围内没有带时间戳的 Token 事件。"
             if language == "zh"
             else "No timed token events matched the selected window."
         ]
-    if language == "zh":
+    if hourly and language == "zh":
+        title = "Token ↑  每小时用量  小时 →"
+        if chart.partial:
+            title += "  * 当日未结束"
+    elif hourly:
+        title = "Tokens ↑  Hourly usage  Hour →"
+        if chart.partial:
+            title += "  * day in progress"
+    elif language == "zh":
         title = "Token ↑  每日用量  日期 →"
         if chart.bucket_days > 1:
             title += f"  {chart.bucket_days}天/柱"
@@ -79,10 +100,13 @@ def _chart_section(result: ScanResult, *, language: str) -> list[str]:
             title += f"  {chart.bucket_days}d/bar"
         if chart.partial:
             title += "  * partial"
-    labels = [
-        bucket_range_label(bucket) + ("*" if bucket.partial else "")
-        for bucket in chart.buckets
-    ]
+    if hourly:
+        labels = [hour_bucket_range_label(bucket) for bucket in chart.buckets]
+    else:
+        labels = [
+            bucket_range_label(bucket) + ("*" if bucket.partial else "")
+            for bucket in chart.buckets
+        ]
     label_width = max(len(label) for label in labels)
     token_width = max(len(_number(bucket.total_tokens)) for bucket in chart.buckets)
     detail_title = "精确值" if language == "zh" else "Exact values"
@@ -152,6 +176,14 @@ def _render_zh(result: ScanResult, *, include_daily: bool) -> str:
                 f"{_local_time(result.window.end, result)}（结束时间不含）"
             ),
             "查看全部历史：codex-token-usage --all",
+        ]
+    elif single_local_day(result) is not None:
+        window_lines = [
+            "统计范围：单日小时分布",
+            (
+                f"时间区间：{_local_time(result.window.start, result)} 至 "
+                f"{_local_time(result.window.end, result)}（结束时间不含）"
+            ),
         ]
     else:
         window_lines = [
@@ -231,6 +263,14 @@ def _render_en(result: ScanResult, *, include_daily: bool) -> str:
                 f"{_local_time(result.window.end, result)} (end exclusive)"
             ),
             "View all history: codex-token-usage --all",
+        ]
+    elif single_local_day(result) is not None:
+        window_lines = [
+            "Scope: Single-day hourly distribution",
+            (
+                f"Range: {_local_time(result.window.start, result)} through "
+                f"{_local_time(result.window.end, result)} (end exclusive)"
+            ),
         ]
     else:
         window_lines = [

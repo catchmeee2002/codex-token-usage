@@ -5,7 +5,7 @@ import unicodedata
 from dataclasses import dataclass
 from datetime import date, timedelta
 
-from .model import ScanResult
+from .model import ScanResult, Usage
 
 
 FRACTION_BLOCKS = " ▁▂▃▄▅▆▇█"
@@ -24,6 +24,21 @@ class VerticalChart:
     lines: list[str]
     buckets: list[ChartBucket]
     bucket_days: int
+    partial: bool
+    selected_index: int | None
+
+
+@dataclass(frozen=True)
+class HourChartBucket:
+    day: date
+    hour: int
+    total_tokens: int
+
+
+@dataclass(frozen=True)
+class HourlyVerticalChart:
+    lines: list[str]
+    buckets: list[HourChartBucket]
     partial: bool
     selected_index: int | None
 
@@ -80,6 +95,20 @@ def partial_days(result: ScanResult) -> set[str]:
     if end.hour or end.minute or end.second or end.microsecond:
         partial.add(end.date().isoformat())
     return partial
+
+
+def single_local_day(result: ScanResult) -> date | None:
+    if result.window.start is None or result.window.label.startswith("rolling "):
+        return None
+    start = result.window.start.astimezone(result.window.timezone)
+    end = result.window.end.astimezone(result.window.timezone)
+    if any((start.hour, start.minute, start.second, start.microsecond)):
+        return None
+    if any((end.hour, end.minute, end.second, end.microsecond)):
+        return None
+    if end.date() != start.date() + timedelta(days=1):
+        return None
+    return start.date()
 
 
 def _date_bounds(result: ScanResult) -> tuple[date, date] | None:
@@ -165,6 +194,11 @@ def bucket_range_label(bucket: ChartBucket) -> str:
     return f"{bucket.start.isoformat()}~{bucket.end.isoformat()}"
 
 
+def hour_bucket_range_label(bucket: HourChartBucket) -> str:
+    end_hour = bucket.hour + 1
+    return f"{bucket.day.isoformat()} {bucket.hour:02d}:00~{end_hour:02d}:00"
+
+
 def _label_axis(buckets: list[ChartBucket], column_width: int) -> str:
     total_width = len(buckets) * column_width
     canvas = [" "] * total_width
@@ -182,6 +216,27 @@ def _label_axis(buckets: list[ChartBucket], column_width: int) -> str:
         start = max(0, min(total_width - len(label), center - len(label) // 2))
         end = min(total_width, start + len(label))
         if any(occupied[max(0, start - label_gap) : min(total_width, end + label_gap)]):
+            continue
+        for position, char in enumerate(label[: end - start], start=start):
+            canvas[position] = char
+            occupied[position] = True
+    return "".join(canvas).rstrip()
+
+
+def _hour_axis(buckets: list[HourChartBucket], column_width: int) -> str:
+    total_width = len(buckets) * column_width
+    canvas = [" "] * total_width
+    occupied = [False] * total_width
+    indexes = {0, 6, 12, 18, len(buckets) - 1}
+    if column_width >= 4:
+        indexes.update(range(0, len(buckets), 3))
+
+    for index in sorted(indexes):
+        label = f"{buckets[index].hour:02d}"
+        center = index * column_width + column_width // 2
+        start = max(0, min(total_width - len(label), center - len(label) // 2))
+        end = min(total_width, start + len(label))
+        if any(occupied[max(0, start - 1) : min(total_width, end + 1)]):
             continue
         for position, char in enumerate(label[: end - start], start=start):
             canvas[position] = char
@@ -230,6 +285,8 @@ def build_daily_vertical_chart(
         else max(1, round(bucket.total_tokens / scale_max * height * 8))
         for bucket in buckets
     ]
+    if selected_index is not None and units[selected_index] == 0:
+        units[selected_index] = 1
     middle_row = height // 2
     lines: list[str] = []
     for row in range(height):
@@ -263,5 +320,87 @@ def build_daily_vertical_chart(
         buckets=buckets,
         bucket_days=bucket_days,
         partial=any(bucket.partial for bucket in buckets),
+        selected_index=selected_index,
+    )
+
+
+def build_hourly_vertical_chart(
+    result: ScanResult,
+    *,
+    width: int,
+    height: int,
+    language: str = "zh",
+    selected_index: int | None = None,
+) -> HourlyVerticalChart | None:
+    selected_day = single_local_day(result)
+    if selected_day is None or width < 36 or height < 3:
+        return None
+
+    totals = [
+        result.hourly.get(f"{selected_day.isoformat()}T{hour:02d}", Usage()).total_tokens
+        for hour in range(24)
+    ]
+    buckets = [
+        HourChartBucket(day=selected_day, hour=hour, total_tokens=totals[hour])
+        for hour in range(24)
+    ]
+    local_generated = result.generated_at.astimezone(result.window.timezone)
+    in_progress = (
+        selected_day == local_generated.date()
+        and result.window.start is not None
+        and result.window.start <= result.generated_at < result.window.end
+    )
+
+    maximum = max(totals, default=0)
+    scale_max = max(1, maximum)
+    top_label = compact_number(maximum, language)
+    middle_label = compact_number(maximum // 2, language)
+    axis_width = max(display_width(top_label), display_width(middle_label), 1)
+    plot_width = max(1, width - axis_width - 2)
+    column_width = max(1, min(4, plot_width // len(buckets)))
+
+    if selected_index is not None:
+        if selected_index < 0:
+            selected_index = local_generated.hour if in_progress else len(buckets) - 1
+        selected_index = max(0, min(len(buckets) - 1, selected_index))
+
+    units = [
+        0 if value == 0 else max(1, round(value / scale_max * height * 8))
+        for value in totals
+    ]
+    if selected_index is not None and units[selected_index] == 0:
+        units[selected_index] = 1
+    middle_row = height // 2
+    lines: list[str] = []
+    for row in range(height):
+        if row == 0:
+            label = top_label
+            axis = "┤"
+        elif row == middle_row:
+            label = middle_label
+            axis = "┤"
+        else:
+            label = ""
+            axis = "│"
+        row_floor = (height - row - 1) * 8
+        slots: list[str] = []
+        for index, value in enumerate(units):
+            fill = max(0, min(8, value - row_floor))
+            slots.append(
+                _bar_slot(
+                    FRACTION_BLOCKS[fill],
+                    column_width,
+                    selected=index == selected_index,
+                )
+            )
+        lines.append(f"{_pad_left(label, axis_width)} {axis}{''.join(slots)}")
+
+    plot_line_width = len(buckets) * column_width
+    lines.append(f"{_pad_left('0', axis_width)} └{'─' * plot_line_width}")
+    lines.append(f"{' ' * (axis_width + 2)}{_hour_axis(buckets, column_width)}")
+    return HourlyVerticalChart(
+        lines=lines,
+        buckets=buckets,
+        partial=in_progress,
         selected_index=selected_index,
     )

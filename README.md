@@ -18,9 +18,9 @@ Codex usage after an imported thread is continued.
 - Full-screen terminal UI with Chinese and English interfaces
 - Press `l` in the UI to switch languages instantly
 - Press `Tab` in the UI to switch between daily usage and effort analysis
-- Last 24 hours, last 7 days, last 30 days, all history, and custom date ranges
-- Conventional daily charts with dates on the x-axis, tokens on the y-axis, and partial-day markers
-- Keyboard-selectable chart bars with exact date or date-range totals
+- Last 24 hours, single-day hourly distribution, last 7 days, last 30 days, all history, and custom date ranges
+- Conventional charts using dates for multi-day ranges and hours for complete single-day ranges
+- Keyboard-selectable chart bars with exact date, date-range, or hourly totals
 - Human-readable Chinese or English text output
 - Stable JSON output with `schema_version: 1`
 - Root and subagent usage breakdowns
@@ -102,6 +102,12 @@ codex-token-usage \
   --to 2026-07-25 \
   --timezone Asia/Shanghai
 
+# Hourly distribution for one local calendar day
+codex-token-usage \
+  --from 2026-07-25 \
+  --to 2026-07-25 \
+  --timezone Asia/Shanghai
+
 # Machine-readable output
 codex-token-usage --all --json
 ```
@@ -116,9 +122,9 @@ Important options:
 | `--all` | Scan all recorded history |
 | `--since DURATION` | Select a rolling window such as `24h`, `7d`, or `2w` |
 | `--from ISO` / `--to ISO` | Select a custom range |
-| `--timezone IANA` | Set the timezone for dates and daily buckets |
+| `--timezone IANA` | Set the timezone for date parsing and time buckets |
 | `--json` | Emit stable machine-readable output |
-| `--no-daily` | Hide daily rows in text output |
+| `--no-daily` | Hide the usage distribution chart in text output |
 | `--strict` | Return non-zero when integrity or authentication warnings occur |
 | `--codex-home PATH` | Override `CODEX_HOME` and `~/.codex` discovery |
 | `--rebuild-cache` | Ignore cached evidence, rescan every session file, and rebuild the cache |

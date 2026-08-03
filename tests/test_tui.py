@@ -19,6 +19,7 @@ def test_tui_offers_all_history_and_custom_ranges() -> None:
         "最近 24 小时",
         "最近 30 天",
         "全部历史",
+        "单日小时分布",
         "自定义日期",
     ]
     assert choice_labels("en") == [
@@ -26,6 +27,7 @@ def test_tui_offers_all_history_and_custom_ranges() -> None:
         "Last 24 hours",
         "Last 30 days",
         "All history",
+        "Single-day hourly",
         "Custom dates",
     ]
 
