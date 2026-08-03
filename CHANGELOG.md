@@ -8,8 +8,9 @@ All notable changes to this project are documented in this file. The format foll
 
 ### Added
 
-- An arbitrary-date hourly distribution in the terminal UI and automatic hourly charts for
-  complete single-day text reports
+- Drill-down navigation from multi-day buckets to date and hourly detail views, with adjacent-day
+  navigation and no single-day date prompt
+- Automatic hourly charts for complete single-day text reports
 - A persistent per-session scan cache that incrementally parses growing JSONL files
 - Explicit `R` and `--rebuild-cache` forced-rescan controls, plus `--no-cache` opt-out support
 

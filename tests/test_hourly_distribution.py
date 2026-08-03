@@ -3,11 +3,12 @@ from __future__ import annotations
 import io
 import json
 import re
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 import pytest
 
 from codex_token_usage.cli import main
+from codex_token_usage.chart import ChartBucket, single_local_day
 from codex_token_usage.scanner import scan_codex_usage
 from codex_token_usage.timeparse import build_window
 from codex_token_usage.tui import TokenUsageTui, choice_labels
@@ -401,16 +402,14 @@ def test_english_single_day_hourly_labels_are_available(tmp_path) -> None:
     assert len(parse_exact_hour_values(output)) == 24
 
 
-def test_tui_exposes_distinct_bilingual_single_day_hourly_choice() -> None:
+def test_tui_uses_rolling_label_and_removes_single_day_menu() -> None:
     chinese = choice_labels("zh")
     english = choice_labels("en")
 
-    assert "单日小时分布" in chinese
-    assert "Single-day hourly" in english
-    assert "最近 24 小时" in chinese
-    assert "Last 24 hours" in english
-    assert chinese.index("单日小时分布") != chinese.index("最近 24 小时")
-    assert english.index("Single-day hourly") != english.index("Last 24 hours")
+    assert "单日小时分布" not in chinese
+    assert "Single-day hourly" not in english
+    assert "滚动 24 小时" in chinese
+    assert "Rolling 24 hours" in english
 
 
 def test_tui_hourly_chart_selection_stops_at_zero_and_twenty_three() -> None:
@@ -491,64 +490,150 @@ def make_test_tui(monkeypatch, home) -> TokenUsageTui:
     return tui
 
 
-def load_single_day(tui: TokenUsageTui, monkeypatch, value: str = "2026-07-25") -> None:
-    monkeypatch.setattr(tui, "_prompt", lambda _prompt: value)
-    tui._load(4)
-    assert tui.single_day_date == value
+def load_default_range(tui: TokenUsageTui) -> None:
+    tui._load(0)
     assert tui.result is not None
 
 
-def test_single_day_empty_prompt_cancels_without_losing_result(
-    tmp_path,
-    monkeypatch,
-) -> None:
+def test_single_day_bucket_drills_into_hourly_view(tmp_path, monkeypatch) -> None:
     tui = make_test_tui(monkeypatch, make_home(tmp_path))
-    load_single_day(tui, monkeypatch)
-    previous_result = tui.result
+    load_default_range(tui)
+    parent = tui.result
+    selected_day = date(2026, 7, 25)
+    tui.selected_daily_bucket = ChartBucket(selected_day, selected_day, 0, False)
 
-    monkeypatch.setattr(tui, "_prompt", lambda _prompt: "")
-    tui._load(4)
+    tui._drill_down()
 
-    assert tui.single_day_date == "2026-07-25"
-    assert tui.result is previous_result
+    assert tui.view_kind == "hourly"
+    assert single_local_day(tui.result) == selected_day
+    assert len(tui.view_stack) == 1
+    assert tui.view_stack[0].result is parent
 
 
-def test_single_day_invalid_iso_sets_date_error(tmp_path, monkeypatch) -> None:
+def test_multi_day_bucket_zooms_before_hourly_drilldown(tmp_path, monkeypatch) -> None:
     tui = make_test_tui(monkeypatch, make_home(tmp_path))
-    monkeypatch.setattr(tui, "_prompt", lambda _prompt: "2026-02-30")
+    load_default_range(tui)
+    parent = tui.result
+    tui.chart_index = 3
+    tui.selected_daily_bucket = ChartBucket(
+        date(2026, 7, 20),
+        date(2026, 7, 25),
+        0,
+        False,
+    )
 
-    tui._load(4)
+    tui._drill_down()
+    zoom = tui.result
+    assert tui.view_kind == "zoom"
+    assert single_local_day(zoom) is None
+    assert len(tui.view_stack) == 1
 
-    assert tui.status.startswith("日期输入错误：")
-    assert tui.result is None
+    selected_day = date(2026, 7, 24)
+    tui.selected_daily_bucket = ChartBucket(selected_day, selected_day, 0, False)
+    tui._drill_down()
+    assert tui.view_kind == "hourly"
+    assert single_local_day(tui.result) == selected_day
+    assert len(tui.view_stack) == 2
+
+    tui._go_back()
+    assert tui.view_kind == "zoom"
+    assert tui.result is zoom
+    tui._go_back()
+    assert tui.view_kind == "range"
+    assert tui.result is parent
+    assert tui.chart_index == 3
 
 
-def test_single_day_refresh_reuses_date_without_prompt(tmp_path, monkeypatch) -> None:
+def test_hourly_brackets_change_day_and_stop_at_today(tmp_path, monkeypatch) -> None:
     tui = make_test_tui(monkeypatch, make_home(tmp_path))
-    load_single_day(tui, monkeypatch)
-    previous_result = tui.result
+    load_default_range(tui)
+    selected_day = date(2026, 7, 25)
+    tui.selected_daily_bucket = ChartBucket(selected_day, selected_day, 0, False)
+    tui._drill_down()
 
-    def unexpected_prompt(_prompt):
-        pytest.fail("refresh prompted for the already selected single-day date")
+    tui._move_hourly_day(-1)
+    assert single_local_day(tui.result) == date(2026, 7, 24)
+    tui._move_hourly_day(1)
+    assert single_local_day(tui.result) == selected_day
 
-    monkeypatch.setattr(tui, "_prompt", unexpected_prompt)
-    tui._load(4, prompt_custom=False)
+    today = tui.result.generated_at.astimezone(tui.result.window.timezone).date()
+    tui.result = scan_codex_usage(
+        tui.codex_home,
+        tui._window_for_dates(
+            today,
+            today,
+            timezone_name=tui.result.window.timezone_name,
+            label="single day",
+        ),
+        now=tui.result.generated_at,
+    )
+    before = tui.result
+    tui._move_hourly_day(1)
+    assert tui.result is before
+    assert tui.status == tui._t("today_limit")
 
-    assert tui.single_day_date == "2026-07-25"
-    assert tui.result is not None
-    assert tui.result is not previous_result
 
-
-def test_language_switch_preserves_single_day_date_and_result(tmp_path, monkeypatch) -> None:
+def test_language_switch_preserves_drilldown_state(tmp_path, monkeypatch) -> None:
     tui = make_test_tui(monkeypatch, make_home(tmp_path))
-    load_single_day(tui, monkeypatch)
+    load_default_range(tui)
+    selected_day = date(2026, 7, 25)
+    tui.selected_daily_bucket = ChartBucket(selected_day, selected_day, 0, False)
+    tui._drill_down()
     previous_result = tui.result
 
     tui._toggle_language()
 
     assert tui.language == "en"
-    assert tui.single_day_date == "2026-07-25"
+    assert tui.view_kind == "hourly"
     assert tui.result is previous_result
+
+
+def test_refresh_preserves_hourly_window_and_parent_stack(tmp_path, monkeypatch) -> None:
+    tui = make_test_tui(monkeypatch, make_home(tmp_path))
+    load_default_range(tui)
+    selected_day = date(2026, 7, 25)
+    tui.selected_daily_bucket = ChartBucket(selected_day, selected_day, 0, False)
+    tui._drill_down()
+    previous_result = tui.result
+    previous_stack = list(tui.view_stack)
+
+    tui._refresh_current()
+
+    assert tui.view_kind == "hourly"
+    assert single_local_day(tui.result) == selected_day
+    assert tui.result is not previous_result
+    assert tui.view_stack == previous_stack
+
+
+def test_enter_drills_current_range_but_applies_other_menu_choice() -> None:
+    class Screen:
+        def __init__(self, keys):
+            self.keys = iter(keys)
+
+        def getch(self):
+            return next(self.keys)
+
+    current = object.__new__(TokenUsageTui)
+    current.screen = Screen((10, ord("q")))
+    current.cursor = 0
+    current.active_choice = 0
+    current._draw = lambda: None
+    current_calls = []
+    current._load = lambda index, **kwargs: current_calls.append(("load", index, kwargs))
+    current._drill_down = lambda: current_calls.append(("drill",))
+    assert current.run() == 0
+    assert current_calls == [("load", 0, {}), ("drill",)]
+
+    other = object.__new__(TokenUsageTui)
+    other.screen = Screen((10, ord("q")))
+    other.cursor = 1
+    other.active_choice = 0
+    other._draw = lambda: None
+    other_calls = []
+    other._load = lambda index, **kwargs: other_calls.append(("load", index, kwargs))
+    other._drill_down = lambda: other_calls.append(("drill",))
+    assert other.run() == 0
+    assert other_calls == [("load", 0, {}), ("load", 1, {})]
 
 
 def test_effort_totals_still_cover_the_whole_selected_day(tmp_path) -> None:

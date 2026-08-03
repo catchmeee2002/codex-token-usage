@@ -298,10 +298,11 @@ def test_tui_lowercase_refresh_and_uppercase_rebuild_use_distinct_modes() -> Non
     calls = []
     tui._draw = lambda: None
     tui._load = lambda index, **kwargs: calls.append((index, kwargs))
+    tui._refresh_current = lambda **kwargs: calls.append(("refresh", kwargs))
 
     assert tui.run() == 0
     assert calls == [
         (0, {}),
-        (0, {"prompt_custom": False}),
-        (0, {"prompt_custom": False, "cache_mode": "rebuild"}),
+        ("refresh", {}),
+        ("refresh", {"cache_mode": "rebuild"}),
     ]

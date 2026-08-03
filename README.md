@@ -18,9 +18,9 @@ Codex usage after an imported thread is continued.
 - Full-screen terminal UI with Chinese and English interfaces
 - Press `l` in the UI to switch languages instantly
 - Press `Tab` in the UI to switch between daily usage and effort analysis
-- Last 24 hours, single-day hourly distribution, last 7 days, last 30 days, all history, and custom date ranges
+- Rolling 24 hours, last 7 days, last 30 days, all history, and custom date ranges
 - Conventional charts using dates for multi-day ranges and hours for complete single-day ranges
-- Keyboard-selectable chart bars with exact date, date-range, or hourly totals
+- Drill-down navigation from multi-day buckets to dates and hourly details without typing a date
 - Human-readable Chinese or English text output
 - Stable JSON output with `schema_version: 1`
 - Root and subagent usage breakdowns
@@ -63,8 +63,10 @@ Controls:
 | Key | Action |
 |---|---|
 | `↑` / `↓` or `j` / `k` | Select a time range |
-| `←` / `→` or `[` / `]` | Select a chart bar and show its exact total |
-| `Enter` | Apply the selected range |
+| `←` / `→` | Select a chart bar and show its exact total |
+| `[` / `]` | Select date bars, or switch days while viewing hourly details |
+| `Enter` | Apply another menu range, or drill into the selected date bucket |
+| `Backspace` | Return to the previous chart level |
 | `r` | Refresh using file-change detection and incremental parsing |
 | `R` | Force a full disk rescan and rebuild the scan cache |
 | `l` | Switch between Chinese and English |

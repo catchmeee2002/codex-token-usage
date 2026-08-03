@@ -16,18 +16,16 @@ NOW = datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc)
 def test_tui_offers_all_history_and_custom_ranges() -> None:
     assert choice_labels("zh") == [
         "最近 7 天",
-        "最近 24 小时",
+        "滚动 24 小时",
         "最近 30 天",
         "全部历史",
-        "单日小时分布",
         "自定义日期",
     ]
     assert choice_labels("en") == [
         "Last 7 days",
-        "Last 24 hours",
+        "Rolling 24 hours",
         "Last 30 days",
         "All history",
-        "Single-day hourly",
         "Custom dates",
     ]
 
