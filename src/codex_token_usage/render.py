@@ -199,6 +199,12 @@ def _render_zh(result: ScanResult, *, include_daily: bool) -> str:
             f"  排除子代理继承历史： {_number(diagnostics.get('subagent_history_events_excluded', 0))}",
             f"  忽略重复快照：       {_number(diagnostics.get('duplicate_token_snapshots_ignored', 0))}",
             f"  忽略完全重复事件：   {_number(diagnostics.get('exact_duplicate_events_ignored', 0))}",
+            "",
+            "扫描加速",
+            f"  扫描缓存复用：       {_number(diagnostics.get('session_files_cache_hits', 0))}",
+            f"  增量解析文件：       {_number(diagnostics.get('session_files_incrementally_parsed', 0))}",
+            f"  完整解析文件：       {_number(diagnostics.get('session_files_fully_parsed', 0))}",
+            f"  缓存回退次数：       {_number(diagnostics.get('scan_cache_fallbacks', 0))}",
         ]
     )
 
@@ -271,6 +277,12 @@ def _render_en(result: ScanResult, *, include_daily: bool) -> str:
             f"  Subagent history excluded:   {_number(diagnostics.get('subagent_history_events_excluded', 0))}",
             f"  Duplicate snapshots ignored: {_number(diagnostics.get('duplicate_token_snapshots_ignored', 0))}",
             f"  Exact duplicates ignored:    {_number(diagnostics.get('exact_duplicate_events_ignored', 0))}",
+            "",
+            "Scan acceleration",
+            f"  Scan-cache hits:              {_number(diagnostics.get('session_files_cache_hits', 0))}",
+            f"  Files parsed incrementally:   {_number(diagnostics.get('session_files_incrementally_parsed', 0))}",
+            f"  Files parsed fully:           {_number(diagnostics.get('session_files_fully_parsed', 0))}",
+            f"  Cache fallbacks:              {_number(diagnostics.get('scan_cache_fallbacks', 0))}",
         ]
     )
 

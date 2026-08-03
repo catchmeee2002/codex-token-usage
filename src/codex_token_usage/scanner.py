@@ -1,16 +1,21 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import os
+import sqlite3
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
+from .cache import CacheMode, CachedFile, SessionEvidenceCache, cache_path
 from .model import ScanResult, ScanWindow, Usage, cumulative_signature
 
 
 IMPORT_MARKER = "<EXTERNAL SESSION IMPORTED>"
 READ_CHUNK_SIZE = 64 * 1024
+BOUNDARY_HASH_SIZE = 4 * 1024
 
 
 @dataclass(frozen=True)
@@ -21,10 +26,9 @@ class ImportRecord:
 @dataclass(frozen=True)
 class TokenEvent:
     timestamp: Any
-    total_usage: Mapping[str, Any]
-    last_usage: Mapping[str, Any]
-    model_context_window: Any
-    rate_limits: Any
+    total_signature: tuple[int, ...]
+    usage_values: tuple[int, ...]
+    fingerprint: str
     before_subagent_trigger: bool
     effort: str | None
     model: str | None
@@ -50,6 +54,21 @@ class FileEvidence:
     current_model: str | None = None
     turns: dict[str, TurnEvidence] = field(default_factory=dict)
     token_events: list[TokenEvent] = field(default_factory=list)
+    content_warnings: dict[str, int] = field(default_factory=dict)
+
+    def warn(self, code: str, amount: int = 1) -> None:
+        self.content_warnings[code] = self.content_warnings.get(code, 0) + amount
+
+
+@dataclass(frozen=True)
+class ReadEvidence:
+    evidence: FileEvidence
+    device: int
+    inode: int
+    source_size: int
+    source_mtime_ns: int
+    parsed_offset: int
+    boundary_hash: str
 
 
 def _parse_timestamp(value: Any) -> datetime | None:
@@ -72,17 +91,22 @@ def _canonical_json(value: Any) -> str:
 
 
 def _event_fingerprint(
-    event: TokenEvent,
+    timestamp: Any,
     total_signature: tuple[int, ...],
     last_signature: tuple[int, ...],
-) -> tuple[Any, ...]:
-    return (
-        event.timestamp,
-        total_signature,
-        last_signature,
-        event.model_context_window,
-        _canonical_json(event.rate_limits),
+    model_context_window: Any,
+    rate_limits: Any,
+) -> str:
+    payload = _canonical_json(
+        (
+            timestamp,
+            total_signature,
+            last_signature,
+            model_context_window,
+            _canonical_json(rate_limits),
+        )
     )
+    return hashlib.sha256(payload.encode("utf-8", errors="replace")).hexdigest()
 
 
 def _consume_object(obj: Any, evidence: FileEvidence) -> None:
@@ -93,7 +117,11 @@ def _consume_object(obj: Any, evidence: FileEvidence) -> None:
         return
     if obj.get("type") == "session_meta":
         if evidence.first_meta is None:
-            evidence.first_meta = payload
+            evidence.first_meta = {
+                "id": payload.get("id"),
+                "timestamp": payload.get("timestamp"),
+                "thread_source": payload.get("thread_source"),
+            }
         else:
             evidence.later_meta_count += 1
         return
@@ -160,13 +188,32 @@ def _consume_object(obj: Any, evidence: FileEvidence) -> None:
     last_usage = info.get("last_token_usage")
     if not isinstance(total_usage, dict) or not isinstance(last_usage, dict):
         return
+    try:
+        total_signature = cumulative_signature(total_usage)
+        last_signature = cumulative_signature(last_usage)
+        usage = Usage.from_mapping(last_usage)
+        usage.validate()
+    except ValueError:
+        evidence.warn("invalid_token_usage_events")
+        return
     evidence.token_events.append(
         TokenEvent(
             timestamp=obj.get("timestamp"),
-            total_usage=total_usage,
-            last_usage=last_usage,
-            model_context_window=info.get("model_context_window"),
-            rate_limits=payload.get("rate_limits"),
+            total_signature=total_signature,
+            usage_values=tuple(getattr(usage, name) for name in (
+                "input_tokens",
+                "cached_input_tokens",
+                "cache_write_input_tokens",
+                "output_tokens",
+                "reasoning_output_tokens",
+            )),
+            fingerprint=_event_fingerprint(
+                obj.get("timestamp"),
+                total_signature,
+                last_signature,
+                info.get("model_context_window"),
+                payload.get("rate_limits"),
+            ),
             before_subagent_trigger=not evidence.subagent_trigger_seen,
             effort=evidence.current_effort,
             model=evidence.current_model,
@@ -175,13 +222,105 @@ def _consume_object(obj: Any, evidence: FileEvidence) -> None:
     )
 
 
-def _read_file_evidence(path: Path, result: ScanResult) -> FileEvidence | None:
-    evidence = FileEvidence()
+def _boundary_hash(path: Path, offset: int) -> str:
+    start = max(0, offset - BOUNDARY_HASH_SIZE)
+    with path.open("rb") as handle:
+        handle.seek(start)
+        payload = handle.read(offset - start)
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _evidence_json(evidence: FileEvidence) -> str:
+    payload = {
+        "m": evidence.first_meta,
+        "lm": evidence.later_meta_count,
+        "im": evidence.import_marker_seen,
+        "st": evidence.subagent_trigger_seen,
+        "cs": [evidence.current_turn_id, evidence.current_effort, evidence.current_model],
+        "tw": [
+            [turn_id, turn.start, turn.end, turn.effort, turn.model]
+            for turn_id, turn in evidence.turns.items()
+        ],
+        "ev": [
+            [
+                event.timestamp,
+                list(event.total_signature),
+                [
+                    *event.usage_values,
+                ],
+                event.fingerprint,
+                event.before_subagent_trigger,
+                event.effort,
+                event.model,
+                event.turn_id,
+            ]
+            for event in evidence.token_events
+        ],
+        "w": evidence.content_warnings,
+    }
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+
+
+def _evidence_from_json(raw: str) -> FileEvidence:
+    payload = json.loads(raw)
+    if not isinstance(payload, dict):
+        raise ValueError("cached evidence is not an object")
+    current = payload.get("cs", [None, None, None])
+    evidence = FileEvidence(
+        first_meta=payload.get("m"),
+        later_meta_count=int(payload.get("lm", 0)),
+        import_marker_seen=bool(payload.get("im", False)),
+        subagent_trigger_seen=bool(payload.get("st", False)),
+        current_turn_id=current[0],
+        current_effort=current[1],
+        current_model=current[2],
+        content_warnings={
+            str(key): int(value) for key, value in dict(payload.get("w", {})).items()
+        },
+    )
+    for item in payload.get("tw", []):
+        turn_id, start, end, effort, model = item
+        evidence.turns[str(turn_id)] = TurnEvidence(start, end, effort, model)
+    for item in payload.get("ev", []):
+        timestamp, total, usage_values, fingerprint, before, effort, model, turn_id = item
+        evidence.token_events.append(
+            TokenEvent(
+                timestamp=timestamp,
+                total_signature=tuple(int(value) for value in total),
+                usage_values=tuple(int(value) for value in usage_values),
+                fingerprint=str(fingerprint),
+                before_subagent_trigger=bool(before),
+                effort=effort,
+                model=model,
+                turn_id=turn_id,
+            )
+        )
+    return evidence
+
+
+def _replay_content_warnings(evidence: FileEvidence, result: ScanResult) -> None:
+    for code, count in evidence.content_warnings.items():
+        result.warn(code, count)
+
+
+def _read_file_evidence(
+    path: Path,
+    result: ScanResult,
+    *,
+    evidence: FileEvidence | None = None,
+    start_offset: int = 0,
+) -> ReadEvidence | None:
+    evidence = evidence or FileEvidence()
+    evidence.content_warnings.pop("truncated_tail_lines", None)
     try:
         before = path.stat()
-        remaining = before.st_size
+        if start_offset < 0 or start_offset > before.st_size:
+            raise OSError("invalid cached file offset")
+        remaining = before.st_size - start_offset
         buffer = b""
+        buffer_start = start_offset
         with path.open("rb") as handle:
+            handle.seek(start_offset)
             while remaining > 0:
                 chunk = handle.read(min(READ_CHUNK_SIZE, remaining))
                 if not chunk:
@@ -194,24 +333,37 @@ def _read_file_evidence(path: Path, result: ScanResult) -> FileEvidence | None:
                         break
                     raw_line = buffer[:newline]
                     buffer = buffer[newline + 1 :]
+                    buffer_start += newline + 1
                     if not raw_line.strip():
                         continue
                     try:
                         _consume_object(json.loads(raw_line), evidence)
                     except (json.JSONDecodeError, UnicodeDecodeError):
-                        result.warn("malformed_json_lines")
+                        evidence.warn("malformed_json_lines")
+        read_end = before.st_size - remaining
+        parsed_offset = read_end
         if buffer.strip():
             try:
                 _consume_object(json.loads(buffer), evidence)
             except (json.JSONDecodeError, UnicodeDecodeError):
-                result.warn("truncated_tail_lines")
+                evidence.warn("truncated_tail_lines")
+                parsed_offset = buffer_start
         after = path.stat()
         if after.st_size != before.st_size or after.st_mtime_ns != before.st_mtime_ns:
             result.warn("files_changed_during_scan")
+        boundary_hash = _boundary_hash(path, parsed_offset)
     except OSError:
         result.warn("unreadable_session_files")
         return None
-    return evidence
+    return ReadEvidence(
+        evidence=evidence,
+        device=int(getattr(before, "st_dev", 0)),
+        inode=int(getattr(before, "st_ino", 0)),
+        source_size=before.st_size,
+        source_mtime_ns=before.st_mtime_ns,
+        parsed_offset=parsed_offset,
+        boundary_hash=boundary_hash,
+    )
 
 
 def _load_auth_mode(codex_home: Path, result: ScanResult) -> str | None:
@@ -266,7 +418,245 @@ def _load_import_ledger(codex_home: Path, result: ScanResult) -> dict[str, Impor
     return imported
 
 
-def scan_codex_usage(codex_home: Path, window: ScanWindow, *, now: datetime) -> ScanResult:
+_CACHE_DIAGNOSTICS = (
+    "scan_cache_enabled",
+    "session_files_cache_hits",
+    "session_files_incrementally_parsed",
+    "session_files_fully_parsed",
+    "session_files_removed_from_cache",
+    "scan_cache_rebuilt",
+    "scan_cache_fallbacks",
+)
+
+
+def _initialize_cache_diagnostics(result: ScanResult, *, enabled: bool) -> None:
+    for code in _CACHE_DIAGNOSTICS:
+        result.bump_diagnostic(code, 0)
+    result.diagnostics["scan_cache_enabled"] = int(enabled)
+
+
+def _cache_record(path: str, read: ReadEvidence, *, chunk_count: int) -> CachedFile:
+    return CachedFile(
+        path=path,
+        device=read.device,
+        inode=read.inode,
+        source_size=read.source_size,
+        source_mtime_ns=read.source_mtime_ns,
+        parsed_offset=read.parsed_offset,
+        boundary_hash=read.boundary_hash,
+        chunk_count=chunk_count,
+    )
+
+
+def _incremental_seed(evidence: FileEvidence) -> FileEvidence:
+    return FileEvidence(
+        first_meta=evidence.first_meta,
+        import_marker_seen=evidence.import_marker_seen,
+        subagent_trigger_seen=evidence.subagent_trigger_seen,
+        current_turn_id=evidence.current_turn_id,
+        current_effort=evidence.current_effort,
+        current_model=evidence.current_model,
+    )
+
+
+def _merge_evidence(base: FileEvidence, delta: FileEvidence) -> FileEvidence:
+    if base.first_meta is None:
+        base.first_meta = delta.first_meta
+    base.later_meta_count += delta.later_meta_count
+    if delta.import_marker_seen:
+        base.import_marker_seen = True
+    base.subagent_trigger_seen = delta.subagent_trigger_seen
+    base.current_turn_id = delta.current_turn_id
+    base.current_effort = delta.current_effort
+    base.current_model = delta.current_model
+    for turn_id, incoming in delta.turns.items():
+        turn = base.turns.setdefault(turn_id, TurnEvidence())
+        if incoming.start is not None:
+            turn.start = incoming.start
+        if incoming.end is not None:
+            turn.end = incoming.end
+        if incoming.effort is not None:
+            turn.effort = incoming.effort
+        if incoming.model is not None:
+            turn.model = incoming.model
+    base.token_events.extend(delta.token_events)
+    base.content_warnings.pop("truncated_tail_lines", None)
+    for code, count in delta.content_warnings.items():
+        base.content_warnings[code] = base.content_warnings.get(code, 0) + count
+    return base
+
+
+def _load_cached_evidence(
+    chunks_by_path: dict[str, list[tuple[int, str]]],
+    record: CachedFile,
+) -> FileEvidence:
+    chunks = chunks_by_path.get(record.path, [])
+    if record.chunk_count <= 0:
+        raise ValueError("cached file has no committed evidence chunks")
+    expected_sequences = list(range(record.chunk_count))
+    selected = [(sequence, raw) for sequence, raw in chunks if sequence < record.chunk_count]
+    if [sequence for sequence, _raw in selected] != expected_sequences:
+        raise ValueError("cached file has no evidence chunks")
+    evidence = _evidence_from_json(selected[0][1])
+    for _sequence, raw in selected[1:]:
+        evidence = _merge_evidence(evidence, _evidence_from_json(raw))
+    return evidence
+
+
+def _same_identity(record: CachedFile, stat_result: os.stat_result) -> bool:
+    device = int(getattr(stat_result, "st_dev", 0))
+    inode = int(getattr(stat_result, "st_ino", 0))
+    if record.device and device and record.device != device:
+        return False
+    if record.inode and inode and record.inode != inode:
+        return False
+    return True
+
+
+def _collect_without_cache(
+    paths: list[Path],
+    result: ScanResult,
+) -> list[FileEvidence]:
+    evidence_items: list[FileEvidence] = []
+    for path in paths:
+        result.bump_diagnostic("session_files_scanned")
+        read = _read_file_evidence(path, result)
+        if read is None:
+            continue
+        result.bump_diagnostic("session_files_fully_parsed")
+        _replay_content_warnings(read.evidence, result)
+        evidence_items.append(read.evidence)
+    return evidence_items
+
+
+def _collect_with_cache(
+    sessions_root: Path,
+    paths: list[Path],
+    result: ScanResult,
+    *,
+    mode: CacheMode,
+) -> list[FileEvidence]:
+    evidence_items: list[FileEvidence] = []
+    with SessionEvidenceCache(cache_path(sessions_root.parent)) as cache:
+        if mode == "rebuild":
+            cache.clear()
+            result.bump_diagnostic("scan_cache_rebuilt")
+        records = cache.records()
+        chunks_by_path = cache.all_evidence_chunks()
+        current_paths: set[str] = set()
+        for path in paths:
+            result.bump_diagnostic("session_files_scanned")
+            relative = path.relative_to(sessions_root).as_posix()
+            current_paths.add(relative)
+            record = records.get(relative)
+            try:
+                before = path.stat()
+            except OSError:
+                result.warn("unreadable_session_files")
+                continue
+
+            evidence: FileEvidence | None = None
+            if mode == "use" and record is not None and _same_identity(record, before):
+                exact_match = (
+                    record.source_size == before.st_size
+                    and record.source_mtime_ns == before.st_mtime_ns
+                )
+                if exact_match:
+                    try:
+                        evidence = _load_cached_evidence(chunks_by_path, record)
+                        after = path.stat()
+                    except (OSError, TypeError, ValueError, json.JSONDecodeError, IndexError):
+                        evidence = None
+                    else:
+                        if (
+                            after.st_size != before.st_size
+                            or after.st_mtime_ns != before.st_mtime_ns
+                        ):
+                            result.warn("files_changed_during_scan")
+                        result.bump_diagnostic("session_files_cache_hits")
+                elif before.st_size > record.source_size:
+                    try:
+                        boundary_matches = (
+                            _boundary_hash(path, record.parsed_offset) == record.boundary_hash
+                        )
+                        if boundary_matches:
+                            cached_evidence = _load_cached_evidence(chunks_by_path, record)
+                            delta_seed = _incremental_seed(cached_evidence)
+                            read = _read_file_evidence(
+                                path,
+                                result,
+                                evidence=delta_seed,
+                                start_offset=record.parsed_offset,
+                            )
+                        else:
+                            read = None
+                    except (OSError, TypeError, ValueError, json.JSONDecodeError, IndexError):
+                        read = None
+                    if read is not None:
+                        evidence = _merge_evidence(cached_evidence, read.evidence)
+                        cache.append_evidence(
+                            relative,
+                            record.chunk_count,
+                            _evidence_json(read.evidence),
+                        )
+                        cache.upsert(
+                            _cache_record(
+                                relative,
+                                read,
+                                chunk_count=record.chunk_count + 1,
+                            )
+                        )
+                        result.bump_diagnostic("session_files_incrementally_parsed")
+
+            if evidence is None:
+                read = _read_file_evidence(path, result)
+                if read is None:
+                    continue
+                evidence = read.evidence
+                cache.upsert(_cache_record(relative, read, chunk_count=0))
+                cache.replace_evidence(relative, _evidence_json(read.evidence))
+                cache.upsert(_cache_record(relative, read, chunk_count=1))
+                result.bump_diagnostic("session_files_fully_parsed")
+
+            _replay_content_warnings(evidence, result)
+            evidence_items.append(evidence)
+
+        removed = cache.remove_missing(current_paths)
+        result.bump_diagnostic("session_files_removed_from_cache", removed)
+    return evidence_items
+
+
+def _collect_file_evidence(
+    codex_home: Path,
+    sessions_root: Path,
+    result: ScanResult,
+    *,
+    cache_mode: CacheMode,
+) -> list[FileEvidence]:
+    paths = sorted(sessions_root.rglob("*.jsonl"))
+    _initialize_cache_diagnostics(result, enabled=cache_mode != "disabled")
+    if cache_mode == "disabled":
+        return _collect_without_cache(paths, result)
+
+    diagnostics_before = dict(result.diagnostics)
+    warnings_before = dict(result.warnings)
+    try:
+        return _collect_with_cache(sessions_root, paths, result, mode=cache_mode)
+    except (OSError, sqlite3.Error):
+        result.diagnostics = diagnostics_before
+        result.warnings = warnings_before
+        result.diagnostics["scan_cache_enabled"] = 0
+        result.bump_diagnostic("scan_cache_fallbacks")
+        return _collect_without_cache(paths, result)
+
+
+def scan_codex_usage(
+    codex_home: Path,
+    window: ScanWindow,
+    *,
+    now: datetime,
+    cache_mode: CacheMode = "use",
+) -> ScanResult:
     result = ScanResult(
         generated_at=now.astimezone(timezone.utc),
         window=window,
@@ -280,16 +670,17 @@ def scan_codex_usage(codex_home: Path, window: ScanWindow, *, now: datetime) -> 
         result.warn("sessions_directory_missing")
         return result
 
-    seen_fingerprints: set[tuple[Any, ...]] = set()
+    seen_fingerprints: set[str] = set()
     actual_threads: set[str] = set()
     imported_threads_seen: set[str] = set()
     continued_import_threads: set[str] = set()
 
-    for path in sorted(sessions_root.rglob("*.jsonl")):
-        result.bump_diagnostic("session_files_scanned")
-        evidence = _read_file_evidence(path, result)
-        if evidence is None:
-            continue
+    for evidence in _collect_file_evidence(
+        codex_home,
+        sessions_root,
+        result,
+        cache_mode=cache_mode,
+    ):
         if evidence.later_meta_count:
             result.bump_diagnostic("inherited_session_meta_records", evidence.later_meta_count)
         if evidence.first_meta is None:
@@ -309,7 +700,6 @@ def scan_codex_usage(codex_home: Path, window: ScanWindow, *, now: datetime) -> 
         thread_started_at = _parse_timestamp(meta.get("timestamp"))
         if thread_started_at is None:
             result.warn("invalid_session_start_timestamps")
-
         ledger_record = imported_records.get(thread_id)
         ledger_imported = ledger_record is not None
         marker_imported = evidence.import_marker_seen
@@ -333,19 +723,14 @@ def scan_codex_usage(codex_home: Path, window: ScanWindow, *, now: datetime) -> 
             ):
                 result.bump_diagnostic("subagent_history_events_excluded")
                 continue
-            try:
-                total_signature = cumulative_signature(event.total_usage)
-                last_signature = cumulative_signature(event.last_usage)
-                usage = Usage.from_mapping(event.last_usage)
-                usage.validate()
-            except ValueError:
-                result.warn("invalid_token_usage_events")
-                continue
+            total_signature = event.total_signature
+            input_tokens = event.usage_values[0]
+            output_tokens = event.usage_values[3]
 
             timestamp = _parse_timestamp(event.timestamp)
             if is_imported and import_boundary is not None:
                 if timestamp is None:
-                    if usage.input_tokens or usage.output_tokens:
+                    if input_tokens or output_tokens:
                         result.warn("ambiguous_import_events")
                     continue
                 if timestamp < import_boundary:
@@ -361,13 +746,12 @@ def scan_codex_usage(codex_home: Path, window: ScanWindow, *, now: datetime) -> 
                 result.warn("token_counter_resets")
             previous_total = total_signature
 
-            fingerprint = _event_fingerprint(event, total_signature, last_signature)
-            if fingerprint in seen_fingerprints:
+            if event.fingerprint in seen_fingerprints:
                 result.bump_diagnostic("exact_duplicate_events_ignored")
                 continue
-            seen_fingerprints.add(fingerprint)
+            seen_fingerprints.add(event.fingerprint)
 
-            if usage.input_tokens == 0 and usage.output_tokens == 0:
+            if input_tokens == 0 and output_tokens == 0:
                 if is_imported and total_signature[-1] > 0:
                     result.bump_diagnostic("import_synthetic_events_excluded")
                 else:
@@ -386,6 +770,7 @@ def scan_codex_usage(codex_home: Path, window: ScanWindow, *, now: datetime) -> 
                     continue
                 day = timestamp.astimezone(window.timezone).date().isoformat()
 
+            usage = Usage(*event.usage_values)
             result.add_usage(usage, thread_type, day)
             turn_key = f"{thread_id}:{event.turn_id}" if event.turn_id else None
             result.add_effort_usage(

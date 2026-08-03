@@ -4,6 +4,13 @@ All notable changes to this project are documented in this file. The format foll
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- A persistent per-session scan cache that incrementally parses growing JSONL files
+- Explicit `R` and `--rebuild-cache` forced-rescan controls, plus `--no-cache` opt-out support
+
 ## [0.5.0] - 2026-07-26
 
 ### Added

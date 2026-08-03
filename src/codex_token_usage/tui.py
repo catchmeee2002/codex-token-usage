@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TextIO
 
+from .cache import CacheMode
 from .chart import (
     build_daily_vertical_chart,
     bucket_range_label,
@@ -87,7 +88,8 @@ TEXT = {
         "need_custom": "请先输入自定义日期",
         "scanning": "正在扫描：{choice}…",
         "date_error": "日期输入错误：{error}",
-        "scan_complete": "扫描完成：{count} 个会话文件",
+        "scan_complete": "扫描完成：{count} 个文件（复用 {hits}，增量 {incremental}，完整 {full}）",
+        "rebuild_complete": "强制重扫完成：{count} 个文件（完整 {full}）",
         "prompt_start": "开始日期 YYYY-MM-DD（留空取消）：",
         "prompt_end": "结束日期 YYYY-MM-DD（留空表示现在）：",
         "custom_canceled": "已取消自定义日期",
@@ -95,7 +97,7 @@ TEXT = {
         "dashboard": "本机 Token 用量仪表盘",
         "effort_dashboard": "Effort 消耗分析",
         "range_menu": "统计范围",
-        "footer": "↑↓ 范围  ←→ 日期  Tab 页面  Enter 应用  r 刷新  l English  q 退出",
+        "footer": "↑↓ 范围  ←→ 日期  Tab 页面  Enter 应用  r 增量刷新  R 强制重扫  l English  q 退出",
         "current": "当前：{scope}",
         "selected": "选中：{range}  {tokens} Token",
         "total": "总 Token",
@@ -128,7 +130,8 @@ TEXT = {
         "need_custom": "Enter a custom date range first",
         "scanning": "Scanning: {choice}…",
         "date_error": "Invalid date input: {error}",
-        "scan_complete": "Scan complete: {count} session files",
+        "scan_complete": "Scan complete: {count} files ({hits} reused, {incremental} incremental, {full} full)",
+        "rebuild_complete": "Forced rescan complete: {count} files ({full} full)",
         "prompt_start": "Start date YYYY-MM-DD (blank cancels): ",
         "prompt_end": "End date YYYY-MM-DD (blank means now): ",
         "custom_canceled": "Custom date range canceled",
@@ -136,7 +139,7 @@ TEXT = {
         "dashboard": "Local Token Usage Dashboard",
         "effort_dashboard": "Effort Usage Analysis",
         "range_menu": "Time range",
-        "footer": "↑↓ range  ←→ date  Tab page  Enter apply  r refresh  l 中文  q quit",
+        "footer": "↑↓ range  ←→ date  Tab page  Enter apply  r refresh  R rescan  l 中文  q quit",
         "current": "Current: {scope}",
         "selected": "Selected: {range}  {tokens} tokens",
         "total": "Total tokens",
@@ -243,6 +246,7 @@ class TokenUsageTui:
         now: datetime,
         timezone_name: str | None,
         language: str,
+        cache_mode: CacheMode = "use",
     ) -> None:
         self.screen = screen
         self.codex_home = codex_home
@@ -258,6 +262,8 @@ class TokenUsageTui:
         self.status = self._t("ready")
         self.custom_from: str | None = None
         self.custom_to: str | None = None
+        self.cache_mode: CacheMode = "disabled" if cache_mode == "disabled" else "use"
+        self.next_cache_mode: CacheMode | None = "rebuild" if cache_mode == "rebuild" else None
         self._init_screen()
 
     def _t(self, key: str, **values: object) -> str:
@@ -296,7 +302,13 @@ class TokenUsageTui:
             to_value=self.custom_to if choice.custom else None,
         )
 
-    def _load(self, index: int, *, prompt_custom: bool = True) -> None:
+    def _load(
+        self,
+        index: int,
+        *,
+        prompt_custom: bool = True,
+        cache_mode: CacheMode | None = None,
+    ) -> None:
         choice = RANGE_CHOICES[index]
         reset_chart = index != self.active_choice or (choice.custom and prompt_custom)
         if choice.custom:
@@ -316,13 +328,24 @@ class TokenUsageTui:
         self._draw()
         try:
             window = self._window_for_choice(choice)
-            self.result = scan_codex_usage(self.codex_home, window, now=self.now)
+            selected_cache_mode = cache_mode or self.next_cache_mode or self.cache_mode
+            self.next_cache_mode = None
+            self.result = scan_codex_usage(
+                self.codex_home,
+                window,
+                now=self.now,
+                cache_mode=selected_cache_mode,
+            )
         except TimeParseError as exc:
             self.status = self._t("date_error", error=exc)
             return
+        status_key = "rebuild_complete" if selected_cache_mode == "rebuild" else "scan_complete"
         self.status = self._t(
-            "scan_complete",
+            status_key,
             count=self.result.diagnostics.get("session_files_scanned", 0),
+            hits=self.result.diagnostics.get("session_files_cache_hits", 0),
+            incremental=self.result.diagnostics.get("session_files_incrementally_parsed", 0),
+            full=self.result.diagnostics.get("session_files_fully_parsed", 0),
         )
 
     def _prompt(self, prompt: str) -> str | None:
@@ -639,8 +662,14 @@ class TokenUsageTui:
                 self.cursor = (self.cursor + 1) % len(RANGE_CHOICES)
             elif key in (curses.KEY_ENTER, 10, 13):
                 self._load(self.cursor)
-            elif key in (ord("r"), ord("R")):
+            elif key == ord("r"):
                 self._load(self.active_choice, prompt_custom=False)
+            elif key == ord("R"):
+                self._load(
+                    self.active_choice,
+                    prompt_custom=False,
+                    cache_mode="disabled" if self.cache_mode == "disabled" else "rebuild",
+                )
             elif key in (curses.KEY_LEFT, ord("[")):
                 self._move_chart_selection(-1)
             elif key in (curses.KEY_RIGHT, ord("]")):
@@ -659,6 +688,7 @@ def run_tui(
     now: datetime | None = None,
     timezone_name: str | None = None,
     language: str = "zh",
+    cache_mode: CacheMode = "use",
     stderr: TextIO,
 ) -> int:
     language = _language(language)
@@ -671,6 +701,7 @@ def run_tui(
                 now=fixed_now,
                 timezone_name=timezone_name,
                 language=language,
+                cache_mode=cache_mode,
             ).run()
         )
     except KeyboardInterrupt:

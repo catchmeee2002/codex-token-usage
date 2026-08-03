@@ -26,6 +26,7 @@ Codex usage after an imported thread is continued.
 - Root and subagent usage breakdowns
 - Structured exclusion of imported Claude Code history
 - Duplicate-snapshot handling and explicit integrity warnings
+- Persistent incremental scan cache with an explicit forced-rescan path
 - No prompts, responses, API keys, session IDs, or source paths in reports
 
 ## Installation
@@ -64,7 +65,8 @@ Controls:
 | `↑` / `↓` or `j` / `k` | Select a time range |
 | `←` / `→` or `[` / `]` | Select a chart bar and show its exact total |
 | `Enter` | Apply the selected range |
-| `r` | Refresh the current report |
+| `r` | Refresh using file-change detection and incremental parsing |
+| `R` | Force a full disk rescan and rebuild the scan cache |
 | `l` | Switch between Chinese and English |
 | `Tab` or `e` | Switch between usage and effort-analysis pages |
 | `q` or `Esc` | Exit |
@@ -119,6 +121,20 @@ Important options:
 | `--no-daily` | Hide daily rows in text output |
 | `--strict` | Return non-zero when integrity or authentication warnings occur |
 | `--codex-home PATH` | Override `CODEX_HOME` and `~/.codex` discovery |
+| `--rebuild-cache` | Ignore cached evidence, rescan every session file, and rebuild the cache |
+| `--no-cache` | Do not read or write the scan cache for this run |
+
+## Scan cache
+
+The default scanner checks every session file's metadata, reuses unchanged parsed evidence, and
+reads only the appended suffix of growing JSONL files. It still reloads authentication and import
+records and reruns counting, import-boundary, and cross-file deduplication logic on every report.
+
+The disposable SQLite cache is stored at
+`$CODEX_HOME/.cache/codex-token-usage/evidence-v1.sqlite3`. It contains only counting evidence and
+derived session metadata, not prompts, responses, or API keys. Delete it at any time, use
+`--rebuild-cache`, or press `R` in the UI to rebuild it from disk. Cache corruption or an
+unwritable cache location falls back to a correct full scan.
 
 ## How counting works
 

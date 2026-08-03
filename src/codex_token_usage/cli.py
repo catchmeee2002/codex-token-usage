@@ -30,8 +30,10 @@ CLI_COPY = {
         "text": "强制使用非交互文本输出",
         "lang": "人类可读输出和 UI 语言，默认 zh",
         "strict": "出现完整性或认证警告时返回非零状态",
+        "rebuild_cache": "忽略已有扫描缓存，完整重扫并重建缓存",
+        "no_cache": "本次运行不读取或写入扫描缓存",
         "ui_text_conflict": "codex-token-usage: error: --ui 与 --text 不能同时使用",
-        "ui_filter_conflict": "codex-token-usage: error: --ui 只能与 --lang、--timezone 或 --codex-home 搭配使用",
+        "ui_filter_conflict": "codex-token-usage: error: --ui 只能与语言、时区、Codex Home 或缓存选项搭配使用",
         "tty_required": "codex-token-usage: error: 终端 UI 需要交互式 TTY",
     },
     "en": {
@@ -49,8 +51,10 @@ CLI_COPY = {
         "text": "force non-interactive text output",
         "lang": "human-readable output and UI language; default: zh",
         "strict": "return non-zero on integrity or authentication warnings",
+        "rebuild_cache": "ignore and rebuild the persistent scan cache",
+        "no_cache": "do not read or write the scan cache for this run",
         "ui_text_conflict": "codex-token-usage: error: --ui and --text cannot be combined",
-        "ui_filter_conflict": "codex-token-usage: error: --ui can only be combined with --lang, --timezone, or --codex-home",
+        "ui_filter_conflict": "codex-token-usage: error: --ui can only be combined with language, timezone, Codex Home, or cache options",
         "tty_required": "codex-token-usage: error: the terminal UI requires an interactive TTY",
     },
 }
@@ -98,6 +102,17 @@ def build_parser(language: str = "zh") -> argparse.ArgumentParser:
         "--strict",
         action="store_true",
         help=copy["strict"],
+    )
+    cache_group = parser.add_mutually_exclusive_group()
+    cache_group.add_argument(
+        "--rebuild-cache",
+        action="store_true",
+        help=copy["rebuild_cache"],
+    )
+    cache_group.add_argument(
+        "--no-cache",
+        action="store_true",
+        help=copy["no_cache"],
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     return parser
@@ -161,6 +176,9 @@ def main(
             now=now,
             timezone_name=args.timezone,
             language=args.lang,
+            cache_mode=(
+                "disabled" if args.no_cache else "rebuild" if args.rebuild_cache else "use"
+            ),
             stderr=stderr,
         )
 
@@ -177,7 +195,13 @@ def main(
         print(f"codex-token-usage: error: {exc}", file=stderr)
         return 2
 
-    result = scan_codex_usage(_codex_home(args.codex_home), window, now=now)
+    cache_mode = "disabled" if args.no_cache else "rebuild" if args.rebuild_cache else "use"
+    result = scan_codex_usage(
+        _codex_home(args.codex_home),
+        window,
+        now=now,
+        cache_mode=cache_mode,
+    )
     if args.json:
         print(json.dumps(result.as_dict(), ensure_ascii=False, indent=2), file=stdout)
     else:
