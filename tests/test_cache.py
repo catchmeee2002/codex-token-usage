@@ -305,4 +305,3 @@ def test_tui_lowercase_refresh_and_uppercase_rebuild_use_distinct_modes() -> Non
         (0, {"prompt_custom": False}),
         (0, {"prompt_custom": False, "cache_mode": "rebuild"}),
     ]
-

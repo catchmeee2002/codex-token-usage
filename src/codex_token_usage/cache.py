@@ -207,4 +207,3 @@ class SessionEvidenceCache:
         missing = cached_paths - current_paths
         self.connection.executemany("DELETE FROM files WHERE path = ?", ((path,) for path in missing))
         return len(missing)
-
